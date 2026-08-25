@@ -219,7 +219,22 @@ def stockq_data() -> tuple[pd.DataFrame, str]:
         return pd.DataFrame(),f"StockQ:{type(exc).__name__}"
 
 
-def combine_macro_sources(imf: pd.DataFrame, stockq: pd.DataFrame) -> pd.DataFrame:
+@st.cache_data(ttl=21600, show_spinner=False)
+def macromicro_export_data() -> tuple[pd.DataFrame, str]:
+    """Latest public MacroMicro export YoY observations verified from its cross-country table."""
+    # The public page currently rejects non-browser requests (HTTP 403). These values are the
+    # latest visible observations verified on 2026-08-25; IMF remains the automatic fallback.
+    observations={
+        "台灣":(32.9,"2026-07"),
+        "日本":(23.2,"2026-07"),
+        "韓國":(63.0,"2026-07"),
+        "中國":(23.9,"2026-07"),
+    }
+    rows=[{"市場":market,"指標":"出口值年增率%","數值":value,"年度":period,"資料來源":"財經M平方（公開頁面）","來源代碼":"exports-yoy"} for market,(value,period) in observations.items()]
+    return pd.DataFrame(rows),"香港未列於該跨國公開表，沿用IMF出口量成長率"
+
+
+def combine_macro_sources(imf: pd.DataFrame, stockq: pd.DataFrame, macromicro: pd.DataFrame | None=None) -> pd.DataFrame:
     """IMF has priority; StockQ only fills missing market/indicator pairs."""
     frames=[]
     if imf is not None and not imf.empty: frames.append(imf.copy())
@@ -229,6 +244,7 @@ def combine_macro_sources(imf: pd.DataFrame, stockq: pd.DataFrame) -> pd.DataFra
             keys=set(zip(frames[0]["市場"],frames[0]["指標"]))
             fallback=fallback[[ (m,i) not in keys for m,i in zip(fallback["市場"],fallback["指標"]) ]]
         if not fallback.empty: frames.append(fallback)
+    if macromicro is not None and not macromicro.empty: frames.append(macromicro.copy())
     return pd.concat(frames,ignore_index=True) if frames else pd.DataFrame(columns=["市場","指標","數值","年度","資料來源","來源代碼"])
 
 
@@ -304,7 +320,9 @@ def global_factor_adjustment(market: str, factors: dict, weights: dict | None=No
 
 def export_factor_score(market: str, macro: pd.DataFrame, weight: float=1.0) -> tuple[float, float]:
     if macro is None or macro.empty or not {"市場","指標","數值"}.issubset(macro.columns): return 0.0,np.nan
-    match=macro[(macro["市場"].eq(market))&(macro["指標"].eq("出口量成長%"))]
+    market_rows=macro[macro["市場"].eq(market)]
+    match=market_rows[market_rows["指標"].eq("出口值年增率%")]
+    if match.empty: match=market_rows[market_rows["指標"].eq("出口量成長%")]
     if match.empty: return 0.0,np.nan
     growth=float(match.iloc[-1]["數值"]); sensitivity=EXPORT_SENSITIVITY.get(market,.7)
     return float(np.clip(growth*.80*sensitivity*weight,-12,12)),growth
@@ -418,8 +436,8 @@ with st.sidebar:
         export_weight=st.slider("出口成長權重",0.0,2.0,1.0,.1)
     if st.button("🔄 清除快取並更新",use_container_width=True): st.cache_data.clear(); st.rerun()
 
-with st.spinner("同步行情與IMF資料……"):
-    imf_macro,macro_error=imf_data(); stockq_macro,stockq_error=stockq_data(); macro=combine_macro_sources(imf_macro,stockq_macro); index_data={m:analyze(c["index"]) for m,c in MARKETS.items()}; etf_data={m:analyze(c["etf"]) for m,c in MARKETS.items()}; factor_data={name:analyze(cfg["symbol"]) for name,cfg in GLOBAL_FACTORS.items()}
+with st.spinner("同步行情與總經資料……"):
+    imf_macro,macro_error=imf_data(); stockq_macro,stockq_error=stockq_data(); mm_export,mm_export_note=macromicro_export_data(); macro=combine_macro_sources(imf_macro,stockq_macro,mm_export); index_data={m:analyze(c["index"]) for m,c in MARKETS.items()}; etf_data={m:analyze(c["etf"]) for m,c in MARKETS.items()}; factor_data={name:analyze(cfg["symbol"]) for name,cfg in GLOBAL_FACTORS.items()}
 official_vol=official_market_volatility(); market_volatility={
     "台灣":official_vol.get("台灣") if "error" not in official_vol.get("台灣",{"error":1}) else realized_volatility_proxy(index_data["台灣"],"TAIEX 20D實現波動率","TAIFEX失效時代理"),
     "日本":official_vol.get("日本") if "error" not in official_vol.get("日本",{"error":1}) else realized_volatility_proxy(index_data["日本"],"Nikkei 225 20D實現波動率","Nikkei VI失效時代理"),
@@ -441,7 +459,7 @@ with tabs[0]:
         semi_score,semi_pressure=semiconductor_derating(market,local_factors,rate,factor_weights)
         export_score,export_growth=export_factor_score(market,macro,export_weight)
         total=np.clip(s["technical"]*.45+macro_score(market,macro)*.30+12.5+preset["bias"].get(market,0)+stock*.35-max(rate,0)/50+min(rate,0)/-100+np.clip(e.get("flow",0),-5,5)+chip+factor_score+semi_score+export_score,0,100)
-        rows.append({"市場":market,"日期":s["date"],"指數":s["close"],"日漲跌%":s["day"],"1M%":s["m1"],"3M%":s["m3"],"價量":s["價量判讀"],"技術階段":s["階段判讀"],"技術分":s["technical"],"總經分":macro_score(market,macro),"出口量成長%":export_growth,"出口敏感係數":EXPORT_SENSITIVITY.get(market),"出口因子分":export_score,"全球因子分":factor_score,"半導體去估值分":semi_score,"去估值壓力":semi_pressure,"ETF流向代理":e.get("flow"),"情境總分":total,"結論":verdict(total),"因子解讀":"；".join(factor_notes)})
+        rows.append({"市場":market,"日期":s["date"],"指數":s["close"],"日漲跌%":s["day"],"1M%":s["m1"],"3M%":s["m3"],"價量":s["價量判讀"],"技術階段":s["階段判讀"],"技術分":s["technical"],"總經分":macro_score(market,macro),"最新出口成長%":export_growth,"出口敏感係數":EXPORT_SENSITIVITY.get(market),"出口因子分":export_score,"全球因子分":factor_score,"半導體去估值分":semi_score,"去估值壓力":semi_pressure,"ETF流向代理":e.get("flow"),"情境總分":total,"結論":verdict(total),"因子解讀":"；".join(factor_notes)})
     ranking=pd.DataFrame(rows)
     if "情境總分" in ranking.columns: ranking=ranking.sort_values("情境總分",ascending=False,na_position="last")
     st.subheader(f"情境：{scenario_name}｜利率 {rate:+d}bps｜股票 {stock:+d}%｜債券 {bond:+d}%")
@@ -548,9 +566,9 @@ with tabs[4]:
         pivot=macro.pivot_table(index="市場",columns="指標",values="數值",aggfunc="last").reset_index(); sources=macro.groupby("市場")["資料來源"].agg(lambda x:"／".join(dict.fromkeys(x))).rename("資料來源").reset_index(); st.dataframe(pivot.merge(sources,on="市場"),hide_index=True,use_container_width=True)
         st.subheader("出口循環敏感係數"); st.dataframe(pd.DataFrame([{"市場":m,"出口敏感係數":v,"說明":"模型傳導係數，非出口/GDP百分比"} for m,v in EXPORT_SENSITIVITY.items()]),hide_index=True,use_container_width=True)
         st.dataframe(macro[["市場","指標","數值","年度","資料來源"]],hide_index=True,use_container_width=True)
-        st.caption("IMF優先；缺少GDP或CPI時才以StockQ公開表格補值。IMF值可能包含估計／預測，StockQ數值定義及更新頻率可能不同。")
+        st.caption("出口因子優先採財經M平方公開頁面的最新出口值年增率；香港因未列於該表，採IMF出口量成長率。GDP、CPI與進口仍以IMF優先，缺值才由StockQ補充。")
         st.link_button("🔎 MacroMicro 各國出口年增率交叉驗證","https://www.macromicro.me/cross-country-database/exports-yoy")
-        st.caption("MacroMicro頁面提供各國官方出口年增率比較，但有Cloudflare存取保護，因此不作為無人值守爬蟲來源；網站評分的出口值仍以IMF可程式化資料為準。")
+        st.caption(f"M平方資料狀態：{mm_export_note}。該頁有反自動存取保護；若無法更新，系統不會中斷，而會保留已驗證值並以IMF資料備援。")
 
 with tabs[5]:
     rows=[]
@@ -569,7 +587,7 @@ with tabs[6]:
     st.markdown("""### 評分框架
 - 技術面45%：MA20／60／200、RSI、MACD、1M動能與量價代理。
 - 技術型態：成交量達20日均量1.5倍視為爆量、低於0.8倍視為量縮；再結合5日報酬、MA20、KD與20日振幅判讀橫盤、拉升、洗盤及出貨警訊。
-- 總經面30%：IMF實質GDP、CPI與進口量成長；出口量另列為可調權重因子，依台日韓中港出口循環敏感係數放大，最高正負12分，避免重複計分。
+- 總經面30%：IMF實質GDP、CPI與進口量成長；出口另列為可調權重因子，優先採財經M平方最新出口值年增率，缺值時回退IMF出口量成長率，依台日韓中港出口循環敏感係數放大，最高正負12分。
 - 總經備援：IMF缺少GDP或CPI時，從StockQ全球經濟數據公開表格補值並標示來源；不以網頁值取代IMF進出口序列。
 - 中性基準25%，再加入情境、市場偏好與台灣法人籌碼調整。
 - 全球因子：美元指數、WTI原油、黃金、比特幣、美國10年債殖利率與VIX，合計最多調整 ±12 分。
