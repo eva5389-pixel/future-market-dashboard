@@ -115,7 +115,31 @@ def technical_diagnosis(df: pd.DataFrame) -> dict:
     elif day<0 and high_volume and above_ma and m5>-5: phase="🧹 洗盤觀察"
     elif day<0 and low_volume and above_ma: phase="🧹 洗盤／健康回檔"
     else: phase="📈 多頭趨勢" if above_ma else "📉 空頭整理"
-    return {"價量判讀":pv,"KD判讀":f"{kd_cross}／{kd_zone}","MACD判讀":macd,"階段判讀":phase,"換手強度":vol_ratio,"20日振幅%":range_pct}
+    returns=df["Close"].pct_change(); signed_turnover=(returns*df["Volume"]).tail(20)
+    turnover_base=df["Volume"].tail(20).sum() or np.nan
+    turnover_flow=signed_turnover.sum()/turnover_base*100 if pd.notna(turnover_base) else np.nan
+    m20=(last.Close/df.iloc[-21].Close-1)*100 if len(df)>20 else m5
+    window60=df.tail(60); low60=window60.Low.min(); high60=window60.High.max()
+    price_position=(last.Close-low60)/(high60-low60) if high60>low60 else .5
+    ma20_slope=(last.MA20/df.iloc[-6].MA20-1)*100 if len(df)>5 and pd.notna(last.MA20) and pd.notna(df.iloc[-6].MA20) else 0
+    down_volume=df.loc[returns<0,"Volume"].tail(10).mean(); up_volume=df.loc[returns>=0,"Volume"].tail(10).mean()
+    down_up_ratio=down_volume/up_volume if pd.notna(down_volume) and pd.notna(up_volume) and up_volume else 1.0
+    if price_position>=.72 and ((pd.notna(turnover_flow) and turnover_flow<-.02) or (day<0 and high_volume) or down_up_ratio>=1.25):
+        chip_phase="📤 出貨"
+        chip_reason=f"位於60日區間{price_position:.0%}位置，跌日／漲日量比{down_up_ratio:.2f}倍，量價資金方向{turnover_flow:+.3f}%"
+    elif pd.notna(last.MA60) and last.Close>=last.MA60 and -8<=m5<0 and ((pd.notna(vol_ratio) and vol_ratio>=1.15) or down_up_ratio>=1.15):
+        chip_phase="🧹 洗盤"
+        chip_reason=f"價格仍守60日均線，5日回檔{m5:.1f}%，換手{vol_ratio:.2f}倍"
+    elif above_ma and m5>=2.5 and ma20_slope>0 and pd.notna(turnover_flow) and turnover_flow>0:
+        chip_phase="🚀 拉貨"
+        chip_reason=f"站上20日均線且5日上漲{m5:.1f}%，20日均線斜率{ma20_slope:+.1f}%，資金方向為正"
+    elif pd.notna(range_pct) and range_pct<=12 and -4<=m20<=8 and pd.notna(turnover_flow) and turnover_flow>=0 and price_position<=.72:
+        chip_phase="🟢 吸籌"
+        chip_reason=f"20日漲跌{m20:+.1f}%、區間振幅{range_pct:.1f}%，價格未過度追高且量價資金方向為正"
+    else:
+        chip_phase="⚪ 籌碼結構穩定"
+        chip_reason=f"換手{vol_ratio:.2f}倍、20日漲跌{m20:+.1f}%；四種典型訊號尚未同時成立"
+    return {"價量判讀":pv,"KD判讀":f"{kd_cross}／{kd_zone}","MACD判讀":macd,"階段判讀":phase,"籌碼判讀":chip_phase,"籌碼理由":chip_reason,"換手強度":vol_ratio,"換手資金方向%":turnover_flow,"20日振幅%":range_pct}
 
 
 def ret(df, periods):
@@ -402,6 +426,15 @@ def oscillator_charts(df):
     return kd_chart,macd_chart
 
 
+def turnover_chart(df):
+    data=df.tail(60).copy(); data["換手率倍數"]=data["Volume"]/data["VOL_MA20"]
+    return alt.Chart(data).mark_bar().encode(
+        x=alt.X("Date:T",title="時間"),y=alt.Y("換手率倍數:Q",title="換手率（倍數）"),
+        color=alt.condition(alt.datum["換手率倍數"]>=1.5,alt.value("#fdbb18"),alt.value("#49a6e9")),
+        tooltip=["Date:T",alt.Tooltip("換手率倍數:Q",format=".2f")]
+    ).properties(height=280,title="🔄 籌碼換手與隱藏吸籌檢測").interactive()
+
+
 def render_metric_grid(items):
     """Render responsive cards without Streamlit metric text truncation."""
     cards=[]
@@ -506,10 +539,17 @@ with tabs[1]:
             ("KD",s["KD判讀"],None),
             ("MACD",s["MACD判讀"],None),
             ("型態階段",s["階段判讀"],None),
+            ("籌碼階段",s["籌碼判讀"],None),
         ])
         st.altair_chart(line_chart(s["df"]),use_container_width=True); kd_chart,macd_chart=oscillator_charts(s["df"]); c1,c2=st.columns(2); c1.altair_chart(kd_chart,use_container_width=True); c2.altair_chart(macd_chart,use_container_width=True)
+        tc1,tc2=st.columns([2,1]); tc1.altair_chart(turnover_chart(s["df"]),use_container_width=True)
+        with tc2:
+            st.subheader("籌碼面診斷分析")
+            st.markdown(f"### {s['籌碼判讀']}")
+            st.write(s["籌碼理由"])
+            st.caption("此為指數成交量／換手代理判讀，不代表可識別特定主力帳戶。")
         st.caption(f"支撐／壓力採近60日低高價10%／90%分位；ATR14={s['atr']:,.2f}。換手強度={s['換手強度']:.2f}倍、20日振幅={s['20日振幅%']:.2f}%。")
-        overview=pd.DataFrame([{"市場":m,"價量判讀":v.get("價量判讀"),"KD判讀":v.get("KD判讀"),"MACD判讀":v.get("MACD判讀"),"階段判讀":v.get("階段判讀"),"換手強度":v.get("換手強度"),"技術分":v.get("technical")} for m,v in index_data.items() if "error" not in v])
+        overview=pd.DataFrame([{"市場":m,"價量判讀":v.get("價量判讀"),"KD判讀":v.get("KD判讀"),"MACD判讀":v.get("MACD判讀"),"階段判讀":v.get("階段判讀"),"籌碼判讀":v.get("籌碼判讀"),"換手強度":v.get("換手強度"),"技術分":v.get("technical")} for m,v in index_data.items() if "error" not in v])
         st.subheader("五市場技術線判讀"); st.dataframe(overview,hide_index=True,use_container_width=True)
 
 with tabs[2]:
@@ -596,6 +636,7 @@ with tabs[6]:
 - 半導體去估值：升息、美債殖利率、美元與VIX上升會增加折現率壓力；台灣與韓國曝險權重較高，最多扣10分。
 - ETF資金流：以20日價量訊號標示流入／流出，並計算五市場絕對訊號的相對強度占比；不是實際申購贖回金額。
 - 動態權重：全球六項因子與出口因子均可在側邊欄設為0至2倍，頁面會即時重算。
+- 籌碼階段：以價格在60日區間的位置、5日／20日報酬、20日均線斜率、成交量相對20日均量、跌日／漲日量比及量價資金方向，區分吸籌、出貨、洗盤、拉貨；無明確共振時顯示籌碼結構穩定。
 - 避險情緒指標：以近1個月 VIX、黃金、美元與比特幣變動合成；0偏風險偏好、100偏高度避險。
 - 台灣現貨採TWSE BFI82U；台股期貨採TAIFEX OpenAPI。
 
