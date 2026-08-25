@@ -6,6 +6,7 @@ ETF 資金流是價量代理，不是實際申購／贖回金額；評分僅供�
 from __future__ import annotations
 
 import re
+import html
 from datetime import date, datetime, timedelta
 from io import StringIO
 from urllib.parse import urlencode
@@ -382,6 +383,29 @@ def oscillator_charts(df):
     return kd_chart,macd_chart
 
 
+def render_metric_grid(items):
+    """Render responsive cards without Streamlit metric text truncation."""
+    cards=[]
+    for label,value,delta in items:
+        delta_html=f'<div class="metric-delta">{html.escape(str(delta))}</div>' if delta not in (None,"") else ""
+        cards.append(
+            '<div class="metric-card">'
+            f'<div class="metric-label">{html.escape(str(label))}</div>'
+            f'<div class="metric-value">{html.escape(str(value))}</div>'
+            f'{delta_html}</div>'
+        )
+    st.markdown("""
+    <style>
+    .metric-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin:8px 0 20px}
+    .metric-card{border:1px solid rgba(128,128,128,.28);border-radius:12px;padding:16px 18px;min-width:0;background:rgba(128,128,128,.04)}
+    .metric-label{font-size:1rem;font-weight:650;opacity:.78;margin-bottom:8px;white-space:normal}
+    .metric-value{font-size:clamp(1.45rem,2.4vw,2.35rem);font-weight:700;line-height:1.18;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}
+    .metric-delta{display:inline-block;margin-top:9px;padding:3px 9px;border-radius:999px;font-size:.95rem;background:rgba(128,128,128,.16)}
+    @media(max-width:700px){.metric-grid{grid-template-columns:repeat(auto-fit,minmax(155px,1fr))}.metric-value{font-size:1.4rem}}
+    </style>
+    <div class="metric-grid">"""+"".join(cards)+"</div>",unsafe_allow_html=True)
+
+
 st.title("🌏 台日韓中港｜情境模擬與市場進場評估")
 st.caption("價量技術 × ETF資金流代理 × 台灣法人／期貨 × IMF總經。")
 with st.sidebar:
@@ -451,8 +475,19 @@ with tabs[1]:
     if "error" in s: st.error(s["error"])
     else:
         st.markdown(f"### {technical_market}｜{MARKETS[technical_market]['index']} 技術分析")
-        a,b,c,d,e=st.columns(5); a.metric("指數",f"{s['close']:,.2f}",f"{s['day']:+.2f}%"); b.metric("量／20日均量",f"{s['volume_ratio']:.2f}x"); c.metric("RSI14",f"{s['rsi']:.1f}"); d.metric("支撐",f"{s['support']:,.2f}"); e.metric("壓力",f"{s['resistance']:,.2f}")
-        q1,q2,q3,q4=st.columns(4); q1.metric("價量狀態",s["價量判讀"]); q2.metric("KD",s["KD判讀"]); q3.metric("MACD",s["MACD判讀"]); q4.metric("型態階段",s["階段判讀"])
+        render_metric_grid([
+            ("指數",f"{s['close']:,.2f}",f"{s['day']:+.2f}%"),
+            ("量／20日均量",f"{s['volume_ratio']:.2f}x",None),
+            ("RSI14",f"{s['rsi']:.1f}",None),
+            ("支撐",f"{s['support']:,.2f}",None),
+            ("壓力",f"{s['resistance']:,.2f}",None),
+        ])
+        render_metric_grid([
+            ("價量狀態",s["價量判讀"],None),
+            ("KD",s["KD判讀"],None),
+            ("MACD",s["MACD判讀"],None),
+            ("型態階段",s["階段判讀"],None),
+        ])
         st.altair_chart(line_chart(s["df"]),use_container_width=True); kd_chart,macd_chart=oscillator_charts(s["df"]); c1,c2=st.columns(2); c1.altair_chart(kd_chart,use_container_width=True); c2.altair_chart(macd_chart,use_container_width=True)
         st.caption(f"支撐／壓力採近60日低高價10%／90%分位；ATR14={s['atr']:,.2f}。換手強度={s['換手強度']:.2f}倍、20日振幅={s['20日振幅%']:.2f}%。")
         overview=pd.DataFrame([{"市場":m,"價量判讀":v.get("價量判讀"),"KD判讀":v.get("KD判讀"),"MACD判讀":v.get("MACD判讀"),"階段判讀":v.get("階段判讀"),"換手強度":v.get("換手強度"),"技術分":v.get("technical")} for m,v in index_data.items() if "error" not in v])
