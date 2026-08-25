@@ -416,7 +416,10 @@ def flow_table(etf_data: dict) -> pd.DataFrame:
 
 def line_chart(df):
     long=df.tail(260).melt(id_vars="Date",value_vars=["Close","MA20","MA60","MA200"],var_name="線型",value_name="價格")
-    return alt.Chart(long).mark_line().encode(x="Date:T",y=alt.Y("價格:Q",scale=alt.Scale(zero=False)),color="線型:N",tooltip=["Date:T","線型:N",alt.Tooltip("價格:Q",format=",.2f")]).properties(height=380).interactive()
+    lines=alt.Chart(long).mark_line().encode(x="Date:T",y=alt.Y("價格:Q",scale=alt.Scale(zero=False)),color="線型:N",tooltip=["Date:T","線型:N",alt.Tooltip("價格:Q",format=",.2f")])
+    latest=df.tail(1).assign(線型="最新日線",價格=lambda x:x["Close"])
+    point=alt.Chart(latest).mark_point(size=115,filled=True,color="#ff4b4b").encode(x="Date:T",y="價格:Q",tooltip=[alt.Tooltip("Date:T",title="資料日期"),alt.Tooltip("價格:Q",title="最新日線價",format=",.2f")])
+    return alt.layer(lines,point).properties(height=380).interactive()
 
 
 def oscillator_charts(df):
@@ -463,7 +466,6 @@ st.caption("價量技術 × ETF資金流代理 × 台灣法人／期貨 × IMF�
 with st.sidebar:
     scenario_name=st.selectbox("總體情境",list(SCENARIOS)); preset=SCENARIOS[scenario_name]; custom=st.checkbox("自行調整衝擊假設")
     rate=st.slider("政策利率變動（bps）",-300,300,preset["rate"],25,disabled=not custom); stock=st.slider("全球股票衝擊（%）",-40,30,preset["stock"],1,disabled=not custom); bond=st.slider("全球債券衝擊（%）",-25,25,preset["bond"],1,disabled=not custom)
-    selected=st.selectbox("技術圖市場",list(MARKETS));
     with st.expander("⚙️ 動態因子權重",expanded=False):
         st.caption("0＝不納入，1＝標準權重，2＝加倍影響；調整後立即重算。")
         factor_weights={name:st.slider(f"{name}權重",0.0,2.0,.4 if name=="VIX恐慌指數" else 1.0,.1,key=f"weight_{cfg['symbol']}") for name,cfg in GLOBAL_FACTORS.items()}
@@ -526,7 +528,7 @@ with tabs[1]:
     s=index_data[technical_market]
     if "error" in s: st.error(s["error"])
     else:
-        st.markdown(f"### {technical_market}｜{MARKETS[technical_market]['index']} 技術分析")
+        st.markdown(f"### {technical_market}｜{MARKETS[technical_market]['index']} 技術分析｜資料日 {s['date']}")
         render_metric_grid([
             ("指數",f"{s['close']:,.2f}",f"{s['day']:+.2f}%"),
             ("量／20日均量",f"{s['volume_ratio']:.2f}x",None),
@@ -554,9 +556,9 @@ with tabs[1]:
 
 with tabs[2]:
     st.subheader("美元、原油、利率與風險情緒")
-    risk_score,risk_label=risk_sentiment(factors_for_market(factor_data,market_volatility,selected))
+    risk_score,risk_label=risk_sentiment(factors_for_market(factor_data,market_volatility,technical_market))
     r1,r2=st.columns(2); r1.metric("避險情緒指標（0–100）",f"{risk_score:.1f}"); r2.metric("目前狀態",risk_label)
-    st.progress(int(risk_score)); st.caption(f"目前顯示{selected}避險情緒；由當地波動率、黃金、美元與比特幣近1個月變動合成。VIX預設權重已降為0.4倍。")
+    st.progress(int(risk_score)); st.caption(f"目前顯示{technical_market}避險情緒；由當地波動率、黃金、美元與比特幣近1個月變動合成。VIX預設權重已降為0.4倍。")
     st.subheader("各市場波動率來源與變動")
     vol_rows=[]
     for market,v in market_volatility.items():
