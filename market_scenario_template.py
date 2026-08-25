@@ -445,9 +445,12 @@ with tabs[0]:
     st.warning("這是相對排序，不是保證進場訊號；極端事件、匯率與政策可能迅速改變結果。")
 
 with tabs[1]:
-    s=index_data[selected]
+    st.subheader("選擇國家查看技術線")
+    technical_market=st.radio("市場",list(MARKETS),horizontal=True,key="technical_market",label_visibility="collapsed")
+    s=index_data[technical_market]
     if "error" in s: st.error(s["error"])
     else:
+        st.markdown(f"### {technical_market}｜{MARKETS[technical_market]['index']} 技術分析")
         a,b,c,d,e=st.columns(5); a.metric("指數",f"{s['close']:,.2f}",f"{s['day']:+.2f}%"); b.metric("量／20日均量",f"{s['volume_ratio']:.2f}x"); c.metric("RSI14",f"{s['rsi']:.1f}"); d.metric("支撐",f"{s['support']:,.2f}"); e.metric("壓力",f"{s['resistance']:,.2f}")
         q1,q2,q3,q4=st.columns(4); q1.metric("價量狀態",s["價量判讀"]); q2.metric("KD",s["KD判讀"]); q3.metric("MACD",s["MACD判讀"]); q4.metric("型態階段",s["階段判讀"])
         st.altair_chart(line_chart(s["df"]),use_container_width=True); kd_chart,macd_chart=oscillator_charts(s["df"]); c1,c2=st.columns(2); c1.altair_chart(kd_chart,use_container_width=True); c2.altair_chart(macd_chart,use_container_width=True)
