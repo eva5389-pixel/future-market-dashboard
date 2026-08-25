@@ -122,6 +122,25 @@ def get_full_analysis(symbol, period):
     return df, fib_levels
 
 
+def classify_chip_phase(df):
+    """Price/volume proxy for accumulation, distribution, shakeout and markup."""
+    last=df.iloc[-1]; returns=df["Close"].pct_change(); recent=df.tail(min(20,len(df)))
+    m5=(last["Close"]/df.iloc[-6]["Close"]-1)*100 if len(df)>5 else 0
+    m20=(last["Close"]/df.iloc[-21]["Close"]-1)*100 if len(df)>20 else m5
+    high20=recent["High"].max(); low20=recent["Low"].min(); position=(last["Close"]-low20)/(high20-low20) if high20>low20 else .5
+    range_pct=(high20-low20)/last["Close"]*100 if last["Close"] else 0; volume_sum=recent["Volume"].sum() or np.nan
+    flow=(returns.tail(len(recent))*recent["Volume"]).sum()/volume_sum*100 if pd.notna(volume_sum) else 0
+    down_vol=df.loc[returns<0,"Volume"].tail(10).mean(); up_vol=df.loc[returns>=0,"Volume"].tail(10).mean(); down_up=down_vol/up_vol if pd.notna(down_vol) and pd.notna(up_vol) and up_vol else 1.0
+    vol_ratio=float(last["Vol_Ratio"]); above_ma=pd.notna(last["MA20"]) and last["Close"]>=last["MA20"]
+    ma_slope=(last["MA20"]/df.iloc[-6]["MA20"]-1)*100 if len(df)>5 and pd.notna(last["MA20"]) and pd.notna(df.iloc[-6]["MA20"]) else 0
+    if position>=.72 and (flow<-.02 or down_up>=1.25 or (returns.iloc[-1]<0 and vol_ratio>=1.2)): phase="📤 出貨"; reason=f"價格位於20日區間{position:.0%}位置，跌日／漲日量比{down_up:.2f}倍，量價資金方向{flow:+.3f}%"
+    elif above_ma and -8<=m5<0 and (vol_ratio>=1.15 or down_up>=1.15): phase="🧹 洗盤"; reason=f"價格仍守20日均線，5期回檔{m5:.1f}%，換手{vol_ratio:.2f}倍"
+    elif above_ma and m5>=2.5 and ma_slope>0 and flow>0: phase="🚀 拉貨"; reason=f"站上20日均線、5期上漲{m5:.1f}%，均線斜率{ma_slope:+.1f}%，量價資金方向為正"
+    elif range_pct<=12 and -4<=m20<=8 and flow>=0 and position<=.72: phase="🟢 吸籌"; reason=f"20期漲跌{m20:+.1f}%、區間振幅{range_pct:.1f}%，未過度追高且量價資金方向為正"
+    else: phase="⚪ 籌碼結構穩定"; reason=f"換手{vol_ratio:.2f}倍、20期漲跌{m20:+.1f}%；四種典型條件尚未形成共振"
+    return phase,reason
+
+
 def _twse_number(value):
     """Convert TWSE comma-formatted values to numbers without fabricating data."""
     cleaned = re.sub(r"[^0-9+\-.]", "", str(value or ""))
@@ -377,12 +396,22 @@ if df is not None:
             st.altair_chart(chip_chart, use_container_width=True)
         with cc2:
             latest_vol = curr["Vol_Ratio"]
-            is_accumulating = curr["Accumulation_Signal"] == 1
+            chip_phase,chip_reason=classify_chip_phase(df)
             st.write("### 籌碼面診斷分析")
             st.write(f"- **換手率強度**: {latest_vol:.2f}倍均量")
-            if latest_vol > 1.5: st.warning("⚠️ 高換手警告：籌碼劇烈換手。")
-            elif is_accumulating: st.success("🎯 偵測到主力隱蔽吸籌！")
-            else: st.info("💡 籌碼結構穩定。")
+            if chip_phase.startswith("🟢"): st.success(f"### 目前判讀：{chip_phase}\n{chip_reason}")
+            elif chip_phase.startswith("📤"): st.error(f"### 目前判讀：{chip_phase}\n{chip_reason}")
+            elif chip_phase.startswith("🧹"): st.warning(f"### 目前判讀：{chip_phase}\n{chip_reason}")
+            elif chip_phase.startswith("🚀"): st.success(f"### 目前判讀：{chip_phase}\n{chip_reason}")
+            else: st.info(f"### 目前判讀：{chip_phase}\n{chip_reason}")
+        st.markdown("#### 四種籌碼狀態對照")
+        st.dataframe(pd.DataFrame([
+            {"狀態":"🟢 吸籌","判讀重點":"區間整理、未過度追高、量價資金方向轉正"},
+            {"狀態":"📤 出貨","判讀重點":"相對高檔、跌日量增或量價資金方向轉負"},
+            {"狀態":"🧹 洗盤","判讀重點":"仍守均線、短線回檔並出現較高換手"},
+            {"狀態":"🚀 拉貨","判讀重點":"站上均線、價格加速、均線上彎且資金方向為正"},
+        ]),hide_index=True,use_container_width=True)
+        st.caption("這是價格與成交量的代理判讀，不能識別特定主力帳戶；應搭配趨勢、法人與基本面使用。")
 
     # --- E. 心理線與三大法人進出（置於頁面最下方） ---
     if show_psy_inst:
