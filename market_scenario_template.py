@@ -46,6 +46,13 @@ GLOBAL_FACTORS = {
 
 # 模型敏感係數，不等同出口/GDP實際百分比；反映出口循環對企業獲利與股市結構的傳導。
 EXPORT_SENSITIVITY = {"台灣":1.15,"韓國":1.05,"日本":.80,"中國":.85,"香港":1.10}
+VOLATILITY_SOURCES = {
+    "台灣":{"name":"TAIWAN VIX","url":"https://www.taifex.com.tw/cht/7/vixDaily3MNew"},
+    "日本":{"name":"Nikkei 225 VI","url":"https://indexes.nikkei.co.jp/en/nkave/index/profile?idx=nk225vi"},
+    "韓國":{"name":"US VIX（依指定）","url":"https://www.cboe.com/tradable_products/vix/"},
+    "香港":{"name":"VHSI／HSI波動率代理","url":"https://www.hsi.com.hk/eng/indexes/all-indexes/volatilityindex"},
+    "中國":{"name":"上證選擇權／上證指數波動率代理","url":"https://www.sse.com.cn/home/wechat/stockOption/stockOptionPage/"},
+}
 
 
 def num(value, default=np.nan):
@@ -126,6 +133,49 @@ def analyze(symbol: str) -> dict:
     return {"symbol": symbol, "df": df, "date": last.Date.date().isoformat(), "close": last.Close, "day": ret(df, 1), "m1": ret(df, 21), "m3": ret(df, 63),
             "volume_ratio": last.Volume / last.VOL_MA20, "rsi": last.RSI14, "atr": last.ATR14, "support": recent.Low.quantile(.1), "resistance": recent.High.quantile(.9),
             "flow": flow, "technical": float(np.clip(score, 0, 100)),"k":last.K,"d":last.D,"macd_hist":last.MACD_HIST,**diagnosis}
+
+
+def _vol_result(series: pd.Series, name: str, source: str, proxy: bool=False) -> dict:
+    series=pd.to_numeric(series,errors="coerce").dropna()
+    if series.empty: return {"error":"無波動率資料","name":name,"source":source,"proxy":proxy}
+    m1=(series.iloc[-1]/series.iloc[-22]-1)*100 if len(series)>=22 else (series.iloc[-1]/series.iloc[0]-1)*100 if len(series)>1 else np.nan
+    return {"close":float(series.iloc[-1]),"m1":float(m1),"name":name,"source":source,"proxy":proxy}
+
+
+@st.cache_data(ttl=1800,show_spinner=False)
+def official_market_volatility() -> dict:
+    result={}
+    # 台灣：期交所最近三個月份的每日收盤檔。
+    try:
+        frames=[]; today=date.today()
+        for offset in range(3):
+            month=(today.replace(day=1)-pd.DateOffset(months=offset)).strftime("%Y%m")
+            raw=requests.get(f"https://www.taifex.com.tw/file/taifex/Dailydownload/vix/log2data/{month}new.txt",timeout=15).content.decode("big5",errors="ignore")
+            for line in raw.splitlines():
+                parts=[p.strip() for p in line.split("\t") if p.strip()]
+                if parts and re.fullmatch(r"\d{8}",parts[0]) and len(parts)>=3: frames.append((parts[0],num(parts[-1])))
+        tw=pd.Series({d:v for d,v in frames}).sort_index(); result["台灣"]=_vol_result(tw,"TAIWAN VIX","TAIFEX官方日收盤")
+    except Exception as exc: result["台灣"]={"error":type(exc).__name__}
+    # 日本：Nikkei官方每日CSV。
+    try:
+        url="https://indexes.nikkei.co.jp/nkave/historical/nikkei_stock_average_vi_daily_en.csv"
+        jp=pd.read_csv(StringIO(requests.get(url,timeout=20).text))["Close"]
+        result["日本"]=_vol_result(jp,"Nikkei 225 VI","Nikkei Indexes官方CSV")
+    except Exception as exc: result["日本"]={"error":type(exc).__name__}
+    return result
+
+
+def realized_volatility_proxy(analysis: dict, name: str, source: str) -> dict:
+    if "error" in analysis: return {"error":analysis["error"],"name":name,"source":source,"proxy":True}
+    close=analysis["df"]["Close"]; rv=close.pct_change().rolling(20).std()*np.sqrt(252)*100
+    return _vol_result(rv,name,source,True)
+
+
+def factors_for_market(global_factors: dict, market_volatility: dict, market: str) -> dict:
+    factors=dict(global_factors)
+    local=market_volatility.get(market,{})
+    if "error" not in local: factors["VIX恐慌指數"]=local
+    return factors
 
 
 @st.cache_data(ttl=21600, show_spinner=False)
@@ -340,12 +390,19 @@ with st.sidebar:
     selected=st.selectbox("技術圖市場",list(MARKETS));
     with st.expander("⚙️ 動態因子權重",expanded=False):
         st.caption("0＝不納入，1＝標準權重，2＝加倍影響；調整後立即重算。")
-        factor_weights={name:st.slider(f"{name}權重",0.0,2.0,1.0,.1,key=f"weight_{cfg['symbol']}") for name,cfg in GLOBAL_FACTORS.items()}
+        factor_weights={name:st.slider(f"{name}權重",0.0,2.0,.4 if name=="VIX恐慌指數" else 1.0,.1,key=f"weight_{cfg['symbol']}") for name,cfg in GLOBAL_FACTORS.items()}
         export_weight=st.slider("出口成長權重",0.0,2.0,1.0,.1)
     if st.button("🔄 清除快取並更新",use_container_width=True): st.cache_data.clear(); st.rerun()
 
 with st.spinner("同步行情與IMF資料……"):
     imf_macro,macro_error=imf_data(); stockq_macro,stockq_error=stockq_data(); macro=combine_macro_sources(imf_macro,stockq_macro); index_data={m:analyze(c["index"]) for m,c in MARKETS.items()}; etf_data={m:analyze(c["etf"]) for m,c in MARKETS.items()}; factor_data={name:analyze(cfg["symbol"]) for name,cfg in GLOBAL_FACTORS.items()}
+official_vol=official_market_volatility(); market_volatility={
+    "台灣":official_vol.get("台灣") if "error" not in official_vol.get("台灣",{"error":1}) else realized_volatility_proxy(index_data["台灣"],"TAIEX 20D實現波動率","TAIFEX失效時代理"),
+    "日本":official_vol.get("日本") if "error" not in official_vol.get("日本",{"error":1}) else realized_volatility_proxy(index_data["日本"],"Nikkei 225 20D實現波動率","Nikkei VI失效時代理"),
+    "韓國":{**factor_data["VIX恐慌指數"],"name":"US VIX（依指定）","source":"CBOE行情／Yahoo Finance","proxy":False},
+    "香港":realized_volatility_proxy(index_data["香港"],"HSI 20D實現波動率","VHSI官方連結；歷史API失效時代理"),
+    "中國":realized_volatility_proxy(index_data["中國"],"上證指數20D實現波動率","上證選擇權頁；歷史API失效時代理"),
+}
 cash,cash_date=twse_flow(); futures,futures_date=taifex_positions()
 tabs=st.tabs(["🏁 市場結論","📈 價量技術","🌍 全球因子","💧 資金流／法人","🌐 IMF總經","🏭 產業評估","🧮 方法"])
 
@@ -355,8 +412,9 @@ with tabs[0]:
         s=index_data[market]; e=etf_data[market]
         if "error" in s: rows.append({"市場":market,"結論":"資料不足"}); continue
         chip=np.clip(cash_total/100,-5,5)+np.clip(foreign_oi/15000,-5,5) if market=="台灣" else 0
-        factor_score,factor_notes=global_factor_adjustment(market,factor_data,factor_weights)
-        semi_score,semi_pressure=semiconductor_derating(market,factor_data,rate,factor_weights)
+        local_factors=factors_for_market(factor_data,market_volatility,market)
+        factor_score,factor_notes=global_factor_adjustment(market,local_factors,factor_weights)
+        semi_score,semi_pressure=semiconductor_derating(market,local_factors,rate,factor_weights)
         export_score,export_growth=export_factor_score(market,macro,export_weight)
         total=np.clip(s["technical"]*.45+macro_score(market,macro)*.30+12.5+preset["bias"].get(market,0)+stock*.35-max(rate,0)/50+min(rate,0)/-100+np.clip(e.get("flow",0),-5,5)+chip+factor_score+semi_score+export_score,0,100)
         rows.append({"市場":market,"日期":s["date"],"指數":s["close"],"日漲跌%":s["day"],"1M%":s["m1"],"3M%":s["m3"],"價量":s["價量判讀"],"技術階段":s["階段判讀"],"技術分":s["technical"],"總經分":macro_score(market,macro),"出口量成長%":export_growth,"出口敏感係數":EXPORT_SENSITIVITY.get(market),"出口因子分":export_score,"全球因子分":factor_score,"半導體去估值分":semi_score,"去估值壓力":semi_pressure,"ETF流向代理":e.get("flow"),"情境總分":total,"結論":verdict(total),"因子解讀":"；".join(factor_notes)})
@@ -369,7 +427,7 @@ with tabs[0]:
     else: st.info("行情來源暫時無回應，請稍後按清除快取並更新。")
     st.subheader("📊 各市場因子圖表")
     home_market=st.selectbox("市場因子長條圖",list(MARKETS),key="home_factor_market")
-    home_breakdown=factor_breakdown(home_market,factor_data,factor_weights,macro,export_weight,rate)
+    home_breakdown=factor_breakdown(home_market,factors_for_market(factor_data,market_volatility,home_market),factor_weights,macro,export_weight,rate)
     home_breakdown["方向"]=np.where(home_breakdown["分數貢獻"]>=0,"正向支持","負向壓力")
     home_bar=alt.Chart(home_breakdown).mark_bar().encode(
         x=alt.X("分數貢獻:Q",title="對市場評分影響（分）"),y=alt.Y("因子:N",sort="-x"),
@@ -377,7 +435,7 @@ with tabs[0]:
         tooltip=["市場:N","因子:N",alt.Tooltip("1M變動%:Q",format=".2f"),alt.Tooltip("權重:Q",format=".1f"),alt.Tooltip("分數貢獻:Q",format="+.2f")]
     ).properties(height=330,title=f"{home_market}｜因子貢獻長條圖")
     st.altair_chart(home_bar,use_container_width=True)
-    home_all=pd.concat([factor_breakdown(m,factor_data,factor_weights,macro,export_weight,rate) for m in MARKETS],ignore_index=True)
+    home_all=pd.concat([factor_breakdown(m,factors_for_market(factor_data,market_volatility,m),factor_weights,macro,export_weight,rate) for m in MARKETS],ignore_index=True)
     home_heat=alt.Chart(home_all).mark_rect().encode(
         x=alt.X("因子:N",title=None),y=alt.Y("市場:N",title=None),
         color=alt.Color("分數貢獻:Q",scale=alt.Scale(domain=[-10,0,10],range=["#d62728","#f2f2f2","#2ca02c"]),title="分數"),
@@ -399,18 +457,24 @@ with tabs[1]:
 
 with tabs[2]:
     st.subheader("美元、原油、利率與風險情緒")
-    risk_score,risk_label=risk_sentiment(factor_data)
+    risk_score,risk_label=risk_sentiment(factors_for_market(factor_data,market_volatility,selected))
     r1,r2=st.columns(2); r1.metric("避險情緒指標（0–100）",f"{risk_score:.1f}"); r2.metric("目前狀態",risk_label)
-    st.progress(int(risk_score)); st.caption("分數越高代表市場越偏避險；由近1個月 VIX、黃金、美元與比特幣變動合成。比特幣在此視為流動性／風險偏好代理，而非固定的避險資產。")
+    st.progress(int(risk_score)); st.caption(f"目前顯示{selected}避險情緒；由當地波動率、黃金、美元與比特幣近1個月變動合成。VIX預設權重已降為0.4倍。")
+    st.subheader("各市場波動率來源與變動")
+    vol_rows=[]
+    for market,v in market_volatility.items():
+        vol_rows.append({"市場":market,"波動率指標":v.get("name"),"目前值":v.get("close"),"1M變動%":v.get("m1"),"資料來源":v.get("source"),"是否代理":"是" if v.get("proxy") else "否","官方連結":VOLATILITY_SOURCES[market]["url"]})
+    st.dataframe(pd.DataFrame(vol_rows),hide_index=True,use_container_width=True,column_config={"官方連結":st.column_config.LinkColumn("官方連結")})
     factor_rows=[]
     for name,cfg in GLOBAL_FACTORS.items():
         s=factor_data[name]
         if "error" in s: factor_rows.append({"因子":name,"代碼":cfg["symbol"],"狀態":s["error"]}); continue
-        factor_rows.append({"因子":name,"代碼":cfg["symbol"],"日期":s["date"],"目前值":s["close"],"日變動%":s["day"],"1M%":s["m1"],"3M%":s["m3"],"判讀":cfg["description"]})
+        display_name="美國VIX（全球參考）" if name=="VIX恐慌指數" else name
+        factor_rows.append({"因子":display_name,"代碼":cfg["symbol"],"日期":s["date"],"目前值":s["close"],"日變動%":s["day"],"1M%":s["m1"],"3M%":s["m3"],"判讀":cfg["description"]})
     st.dataframe(pd.DataFrame(factor_rows),hide_index=True,use_container_width=True)
     st.subheader("各市場因子分數圖")
     factor_market=st.selectbox("選擇市場查看因子貢獻",list(MARKETS),key="factor_chart_market")
-    breakdown=factor_breakdown(factor_market,factor_data,factor_weights,macro,export_weight,rate)
+    breakdown=factor_breakdown(factor_market,factors_for_market(factor_data,market_volatility,factor_market),factor_weights,macro,export_weight,rate)
     breakdown["方向"]=np.where(breakdown["分數貢獻"]>=0,"正向支持","負向壓力")
     contribution_chart=alt.Chart(breakdown).mark_bar().encode(
         x=alt.X("分數貢獻:Q",title="對市場評分的影響（分）"),y=alt.Y("因子:N",sort="-x"),
@@ -418,7 +482,7 @@ with tabs[2]:
         tooltip=["市場:N","因子:N",alt.Tooltip("1M變動%:Q",format=".2f"),alt.Tooltip("權重:Q",format=".1f"),alt.Tooltip("分數貢獻:Q",format="+.2f")]
     ).properties(height=330,title=f"{factor_market}｜因子正負貢獻").interactive()
     st.altair_chart(contribution_chart,use_container_width=True)
-    all_breakdowns=pd.concat([factor_breakdown(m,factor_data,factor_weights,macro,export_weight,rate) for m in MARKETS],ignore_index=True)
+    all_breakdowns=pd.concat([factor_breakdown(m,factors_for_market(factor_data,market_volatility,m),factor_weights,macro,export_weight,rate) for m in MARKETS],ignore_index=True)
     heatmap=alt.Chart(all_breakdowns).mark_rect().encode(
         x=alt.X("因子:N",title=None),y=alt.Y("市場:N",title=None),
         color=alt.Color("分數貢獻:Q",scale=alt.Scale(domain=[-10,0,10],range=["#d62728","#f2f2f2","#2ca02c"]),title="分數"),
@@ -457,7 +521,7 @@ with tabs[5]:
             s=analyze(symbol)
             if "error" in s: continue
             bias=sum(v for k,v in preset["sector"].items() if k in sector)
-            semi_adj,semi_pressure=semiconductor_derating(market,factor_data,rate,factor_weights) if any(k in sector for k in ("半導體","科技","電子")) else (0.0,"不適用")
+            semi_adj,semi_pressure=semiconductor_derating(market,factors_for_market(factor_data,market_volatility,market),rate,factor_weights) if any(k in sector for k in ("半導體","科技","電子")) else (0.0,"不適用")
             market_export,_=export_factor_score(market,macro,export_weight); export_sensitivity=1.0 if any(k in sector for k in ("半導體","科技","電子")) else .25 if any(k in sector for k in ("金融","銀行")) else .6; sector_export=market_export*export_sensitivity
             score=np.clip(s["technical"]+bias+stock*.25+semi_adj+sector_export,0,100)
             rows.append({"市場":market,"產業":sector,"代理ETF":symbol,"1M%":s["m1"],"3M%":s["m3"],"技術分":s["technical"],"出口因子分":sector_export,"去估值調整分":semi_adj,"去估值壓力":semi_pressure,"情境分":score,"結論":verdict(score)})
@@ -471,6 +535,7 @@ with tabs[6]:
 - 總經備援：IMF缺少GDP或CPI時，從StockQ全球經濟數據公開表格補值並標示來源；不以網頁值取代IMF進出口序列。
 - 中性基準25%，再加入情境、市場偏好與台灣法人籌碼調整。
 - 全球因子：美元指數、WTI原油、黃金、比特幣、美國10年債殖利率與VIX，合計最多調整 ±12 分。
+- 波動率採市場別資料：台灣TAIFEX VIX、日本Nikkei 225 VI、韓國依指定採美國VIX；香港與中國在官方歷史API不可用時採當地指數20日實現波動率並標示代理。VIX預設權重0.4倍。
 - 半導體去估值：升息、美債殖利率、美元與VIX上升會增加折現率壓力；台灣與韓國曝險權重較高，最多扣10分。
 - ETF資金流：以20日價量訊號標示流入／流出，並計算五市場絕對訊號的相對強度占比；不是實際申購贖回金額。
 - 動態權重：全球六項因子與出口因子均可在側邊欄設為0至2倍，頁面會即時重算。
