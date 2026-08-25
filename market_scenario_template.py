@@ -229,9 +229,10 @@ def macromicro_export_data() -> tuple[pd.DataFrame, str]:
         "日本":(23.2,"2026-07"),
         "韓國":(63.0,"2026-07"),
         "中國":(23.9,"2026-07"),
+        "香港":(23.9,"2026-07"),
     }
-    rows=[{"市場":market,"指標":"出口值年增率%","數值":value,"年度":period,"資料來源":"財經M平方（公開頁面）","來源代碼":"exports-yoy"} for market,(value,period) in observations.items()]
-    return pd.DataFrame(rows),"香港未列於該跨國公開表，沿用IMF出口量成長率"
+    rows=[{"市場":market,"指標":"出口值年增率%","數值":value,"年度":period,"資料來源":"財經M平方（中國出口代理）" if market=="香港" else "財經M平方（公開頁面）","來源代碼":"exports-yoy-cn-proxy" if market=="香港" else "exports-yoy"} for market,(value,period) in observations.items()]
+    return pd.DataFrame(rows),"香港依使用者指定，採中國出口值年增率作為代理"
 
 
 def combine_macro_sources(imf: pd.DataFrame, stockq: pd.DataFrame, macromicro: pd.DataFrame | None=None) -> pd.DataFrame:
@@ -566,7 +567,7 @@ with tabs[4]:
         pivot=macro.pivot_table(index="市場",columns="指標",values="數值",aggfunc="last").reset_index(); sources=macro.groupby("市場")["資料來源"].agg(lambda x:"／".join(dict.fromkeys(x))).rename("資料來源").reset_index(); st.dataframe(pivot.merge(sources,on="市場"),hide_index=True,use_container_width=True)
         st.subheader("出口循環敏感係數"); st.dataframe(pd.DataFrame([{"市場":m,"出口敏感係數":v,"說明":"模型傳導係數，非出口/GDP百分比"} for m,v in EXPORT_SENSITIVITY.items()]),hide_index=True,use_container_width=True)
         st.dataframe(macro[["市場","指標","數值","年度","資料來源"]],hide_index=True,use_container_width=True)
-        st.caption("出口因子優先採財經M平方公開頁面的最新出口值年增率；香港因未列於該表，採IMF出口量成長率。GDP、CPI與進口仍以IMF優先，缺值才由StockQ補充。")
+        st.caption("出口因子優先採財經M平方公開頁面的最新出口值年增率；香港依指定採中國出口值年增率作為代理，但仍使用香港自己的出口敏感係數。GDP、CPI與進口仍以IMF優先，缺值才由StockQ補充。")
         st.link_button("🔎 MacroMicro 各國出口年增率交叉驗證","https://www.macromicro.me/cross-country-database/exports-yoy")
         st.caption(f"M平方資料狀態：{mm_export_note}。該頁有反自動存取保護；若無法更新，系統不會中斷，而會保留已驗證值並以IMF資料備援。")
 
