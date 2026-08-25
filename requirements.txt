@@ -1,0 +1,10 @@
+streamlit
+pandas
+numpy
+plotly
+yfinance
+altair
+requests
+lxml
+openpyxl>=3.1
+python-docx
