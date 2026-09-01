@@ -19,12 +19,12 @@ st.set_page_config(page_title="專業金融技術與即時診斷儀表板", layo
 with st.sidebar:
     app_page = st.radio(
         "功能頁面",
-        ["個股技術與法人分析", "亞洲市場情境評估"],
+        ["個股技術與法人分析", "全球市場情境評估"],
         index=1,
         horizontal=False,
     )
 
-if app_page == "亞洲市場情境評估":
+if app_page == "全球市場情境評估":
     scenario_file = Path(__file__).with_name("market_scenario_template.py")
     # 本機開發時可共用 stock_app 中的最新版模組；正式部署仍建議把模組
     # 與 app.py 一起放在 future 資料夾／Git 專案內。
@@ -33,12 +33,12 @@ if app_page == "亞洲市場情境評估":
         if shared_scenario_file.exists():
             scenario_file = shared_scenario_file
     if not scenario_file.exists():
-        st.error("缺少亞洲市場分析模組 market_scenario_template.py。")
+        st.error("缺少全球市場分析模組 market_scenario_template.py。")
         st.stop()
     scenario_code = scenario_file.read_text(encoding="utf-8")
     # app.py 已先設定全站版面，子頁不能再次呼叫 set_page_config。
     scenario_code = scenario_code.replace(
-        'st.set_page_config(page_title="亞洲市場情境評估", page_icon="🌏", layout="wide")',
+        'st.set_page_config(page_title="全球市場情境評估", page_icon="🌏", layout="wide")',
         "",
     )
     exec(compile(scenario_code, str(scenario_file), "exec"), globals(), globals())
