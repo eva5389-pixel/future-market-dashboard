@@ -149,6 +149,22 @@ def wti_spot_price() -> pd.DataFrame:
     return raw.dropna().sort_values("Date")
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def gold_spot_proxy() -> tuple[pd.DataFrame, str]:
+    """Scale GLD history to the latest live XAU/USD spot price for a transparent proxy."""
+    response=requests.get("https://api.goldprice.dev/v1/prices?symbol=XAU-USD-SPOT",timeout=25)
+    response.raise_for_status()
+    row=response.json()["symbols"][0]
+    live_spot=float(row["price"])
+    gld=prices("GLD")
+    if gld.empty: return pd.DataFrame(),"GLD 行情暫時無法取得"
+    scale=live_spot/float(gld["Close"].iloc[-1])
+    proxy=gld[["Date","Close"]].rename(columns={"Close":"現貨"}).copy()
+    proxy["現貨"]=proxy["現貨"]*scale
+    timestamp=str(row.get("computed_at",gld["Date"].iloc[-1]))
+    return proxy,f"XAU/USD 即時價 {live_spot:,.2f} 美元／盎司校準於 {timestamp[:10]}"
+
+
 @st.cache_data(ttl=21600, show_spinner=False)
 def gold_inventory_snapshot() -> tuple[pd.DataFrame, str]:
     """Fetch CME's current COMEX depository report; never substitute ETF holdings."""
@@ -677,11 +693,18 @@ def render_commodity_section(commodity_data: dict, scenario_name: str, rate: int
             if spread.empty: st.info("WTI 期貨與現貨日期目前無法對齊。")
             else:
                 st.altair_chart(spread_chart(spread,"WTI 近月期貨－Cushing 現貨價差（美元／桶）"),width="stretch")
-                latest=spread.iloc[-1]; st.caption(f"最新價差 {latest['價差']:+.2f} 美元／桶（{latest['價差率%']:+.2f}%）。正值通常為期貨溢價，負值通常為現貨溢價；近月連續合約換月時可能出現跳動。資料：Yahoo Finance、EIA／FRED。")
+                latest=spread.iloc[-1]; st.caption(f"最新價差 {latest['價差']:+.2f} 美元／桶（{latest['價差率%']:+.2f}%）。正值通常為期貨溢價，負值通常為現貨溢價；近月連續合約換月時可能出現跳動。資料：Yahoo Finance、EIA。")
         except Exception as exc: st.info(f"WTI 期現貨價差暫時無法更新（{type(exc).__name__}）。")
     else:
-        st.info("黃金現貨的免費歷史授權來源目前無法穩定讀取，因此暫不以 GLD、金礦股或其他不同單位代理現貨，避免產生錯誤價差。黃金期貨技術線與成交量仍正常顯示。")
-        st.link_button("查看 CME 黃金期貨與交割資料","https://www.cmegroup.com/markets/metals/precious/gold.html")
+        try:
+            spot,spot_note=gold_spot_proxy()
+            spread=futures_spot_spread(commodity_data["黃金期貨指數"]["df"],spot,"現貨")
+            if spread.empty: st.info("黃金期貨與現貨代理日期目前無法對齊。")
+            else:
+                st.altair_chart(spread_chart(spread,"黃金近月期貨－XAU/USD 現貨代理價差（美元／盎司）"),width="stretch")
+                latest=spread.iloc[-1]
+                st.caption(f"最新代理價差 {latest['價差']:+.2f} 美元／盎司（{latest['價差率%']:+.2f}%）。{spot_note}；歷史現貨以 GLD 報酬比例換算，適合觀察方向，不等同正式 LBMA 歷史定盤價。資料：Yahoo Finance、goldprice.dev。")
+        except Exception as exc: st.info(f"黃金期現貨代理價差暫時無法更新（{type(exc).__name__}）。")
 
     st.markdown("### 庫存量")
     inv_gold,inv_note=gold_inventory_snapshot()
