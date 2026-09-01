@@ -137,6 +137,19 @@ def oil_inventory() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=21600, show_spinner=False)
+def wti_spot_price() -> pd.DataFrame:
+    """EIA daily Cushing WTI spot price in dollars per barrel."""
+    url="https://www.eia.gov/dnav/pet/hist_xls/RWTCd.xls"
+    response=requests.get(url,timeout=35,headers={"User-Agent":"Mozilla/5.0"})
+    response.raise_for_status()
+    raw=pd.read_excel(BytesIO(response.content),sheet_name="Data 1",skiprows=2)
+    raw=raw.iloc[:,:2].copy(); raw.columns=["Date","現貨"]
+    raw["Date"]=pd.to_datetime(raw["Date"],errors="coerce")
+    raw["現貨"]=pd.to_numeric(raw["現貨"],errors="coerce")
+    return raw.dropna().sort_values("Date")
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
 def gold_inventory_snapshot() -> tuple[pd.DataFrame, str]:
     """Fetch CME's current COMEX depository report; never substitute ETF holdings."""
     url="https://www.cmegroup.com/delivery_reports/Gold_Stocks.xls"
@@ -654,7 +667,7 @@ def render_commodity_section(commodity_data: dict, scenario_name: str, rate: int
     spread_choice=st.radio("商品",["WTI 原油","黃金"],horizontal=True,key=f"spread_choice_{SCENARIO_VIEW}")
     if spread_choice=="WTI 原油":
         try:
-            spot=fred_series("DCOILWTICO","現貨")
+            spot=wti_spot_price()
             spread=futures_spot_spread(commodity_data["西德州原油期貨"]["df"],spot,"現貨")
             if spread.empty: st.info("WTI 期貨與現貨日期目前無法對齊。")
             else:
