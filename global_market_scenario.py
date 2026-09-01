@@ -525,10 +525,11 @@ def flow_table(etf_data: dict) -> pd.DataFrame:
 
 
 def line_chart(df, show_fibonacci: bool=False):
-    display=df.tail(260).copy()
-    long=display.melt(id_vars="Date",value_vars=["Close","MA20","MA60","MA200"],var_name="線型",value_name="價格")
+    long=df.tail(260).melt(id_vars="Date",value_vars=["Close","MA20","MA60","MA200"],var_name="線型",value_name="價格")
     lines=alt.Chart(long).mark_line().encode(x="Date:T",y=alt.Y("價格:Q",scale=alt.Scale(zero=False)),color="線型:N",tooltip=["Date:T","線型:N",alt.Tooltip("價格:Q",format=",.2f")])
-    layers=[lines]
+    latest=df.tail(1).assign(線型="最新日線",價格=lambda x:x["Close"])
+    point=alt.Chart(latest).mark_point(size=115,filled=True,color="#ff4b4b").encode(x="Date:T",y="價格:Q",tooltip=[alt.Tooltip("Date:T",title="資料日期"),alt.Tooltip("價格:Q",title="最新日線價",format=",.2f")])
+    layers=[lines,point]
     if show_fibonacci:
         window=df.tail(260); high=float(window["High"].max()); low=float(window["Low"].min()); span=high-low
         fib=pd.DataFrame([
@@ -542,16 +543,17 @@ def line_chart(df, show_fibonacci: bool=False):
             x="Date:T",y="價格:Q",text=alt.Text("比例:N")
         )
         layers.extend([rules,labels])
-    price_chart=(alt.layer(*layers) if show_fibonacci else lines).properties(height=330,title="價格與均線")
+    return alt.layer(*layers).properties(height=380,title="價格與均線").interactive()
+
+
+def price_volume_chart(df):
+    display=df.tail(260).copy()
     display["漲跌方向"]=np.where(display["Close"]>=display["Open"],"上漲","下跌")
-    volume_chart=alt.Chart(display).mark_bar(opacity=.75).encode(
+    return alt.Chart(display).mark_bar(opacity=.75).encode(
         x=alt.X("Date:T",title=None),y=alt.Y("Volume:Q",title="成交量"),
         color=alt.Color("漲跌方向:N",scale=alt.Scale(domain=["上漲","下跌"],range=["#ef5350","#26a69a"]),legend=None),
         tooltip=[alt.Tooltip("Date:T",title="日期"),alt.Tooltip("Volume:Q",title="成交量",format=",")]
-    ).properties(height=105,title="成交量")
-    # Keep the two panels in one shared-time chart. Applying interactive() to the
-    # vconcat container can suppress layered marks in Streamlit's Vega renderer.
-    return alt.vconcat(price_chart,volume_chart,spacing=8).resolve_scale(x="shared")
+    ).properties(height=150,title="成交量").interactive()
 
 
 def spread_chart(frame: pd.DataFrame, title: str):
@@ -663,6 +665,7 @@ def render_commodity_section(commodity_data: dict, scenario_name: str, rate: int
         ("情境分",f"{scenario_score:.1f}",verdict(scenario_score)),("技術階段",selected_data["階段判讀"],None),
     ])
     st.altair_chart(line_chart(selected_data["df"],show_fibonacci=show_fibonacci),width="stretch")
+    st.altair_chart(price_volume_chart(selected_data["df"]),width="stretch")
     st.caption(f"{scenario_note}。資料屬性：{cfg['type']}。紅柱為收高、綠柱為收低；指數若未提供成交量會顯示空值。DAX『農金』依 DAXglobal Agribusiness（農業企業）解讀。")
 
     st.markdown("### 期現貨價差")
