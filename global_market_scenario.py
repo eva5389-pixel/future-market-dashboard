@@ -569,7 +569,7 @@ def line_chart(df, show_fibonacci: bool=False):
         fib_toggle=alt.selection_point(name="fib_toggle",fields=["控制"],on="click",toggle=True,empty=False)
         window=df.tail(260); high=float(window["High"].max()); low=float(window["Low"].min()); span=high-low
         fib=pd.DataFrame([
-            {"Date":window["Date"].max(),"比例":label,"價格":high-ratio*span}
+            {"Date":window["Date"].max(),"比例":label,"價格":high-ratio*span,"控制":"費波那契"}
             for ratio,label in ((0.0,"0% 壓力"),(.382,"38.2%"),(.5,"50%"),(.618,"61.8%"),(1.0,"100% 支撐"))
         ])
         rules=alt.Chart(fib).mark_rule(color="#f59e0b",strokeDash=[6,4]).encode(
