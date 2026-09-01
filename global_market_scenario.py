@@ -549,7 +549,9 @@ def line_chart(df, show_fibonacci: bool=False):
         color=alt.Color("漲跌方向:N",scale=alt.Scale(domain=["上漲","下跌"],range=["#ef5350","#26a69a"]),legend=None),
         tooltip=[alt.Tooltip("Date:T",title="日期"),alt.Tooltip("Volume:Q",title="成交量",format=",")]
     ).properties(height=105,title="成交量")
-    return alt.vconcat(price_chart,volume_chart,spacing=8).resolve_scale(x="shared").interactive()
+    # Keep the two panels in one shared-time chart. Applying interactive() to the
+    # vconcat container can suppress layered marks in Streamlit's Vega renderer.
+    return alt.vconcat(price_chart,volume_chart,spacing=8).resolve_scale(x="shared")
 
 
 def spread_chart(frame: pd.DataFrame, title: str):
