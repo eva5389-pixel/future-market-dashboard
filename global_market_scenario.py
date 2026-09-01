@@ -173,6 +173,8 @@ def gold_inventory_snapshot() -> tuple[pd.DataFrame, str]:
 def futures_spot_spread(futures: pd.DataFrame, spot: pd.DataFrame, spot_col: str) -> pd.DataFrame:
     left=futures[["Date","Close"]].rename(columns={"Close":"期貨價"}).sort_values("Date")
     right=spot[["Date",spot_col]].rename(columns={spot_col:"現貨價"}).sort_values("Date")
+    left["Date"]=pd.to_datetime(left["Date"]).astype("datetime64[ns]")
+    right["Date"]=pd.to_datetime(right["Date"]).astype("datetime64[ns]")
     merged=pd.merge_asof(left,right,on="Date",direction="backward",tolerance=pd.Timedelta(days=4)).dropna()
     merged["價差"]=merged["期貨價"]-merged["現貨價"]
     merged["價差率%"]=merged["價差"]/merged["現貨價"]*100
@@ -526,9 +528,7 @@ def line_chart(df, show_fibonacci: bool=False):
     display=df.tail(260).copy()
     long=display.melt(id_vars="Date",value_vars=["Close","MA20","MA60","MA200"],var_name="線型",value_name="價格")
     lines=alt.Chart(long).mark_line().encode(x="Date:T",y=alt.Y("價格:Q",scale=alt.Scale(zero=False)),color="線型:N",tooltip=["Date:T","線型:N",alt.Tooltip("價格:Q",format=",.2f")])
-    latest=df.tail(1).assign(線型="最新日線",價格=lambda x:x["Close"])
-    point=alt.Chart(latest).mark_point(size=115,filled=True,color="#ff4b4b").encode(x="Date:T",y="價格:Q",tooltip=[alt.Tooltip("Date:T",title="資料日期"),alt.Tooltip("價格:Q",title="最新日線價",format=",.2f")])
-    layers=[lines,point]
+    layers=[lines]
     if show_fibonacci:
         window=df.tail(260); high=float(window["High"].max()); low=float(window["Low"].min()); span=high-low
         fib=pd.DataFrame([
@@ -542,7 +542,7 @@ def line_chart(df, show_fibonacci: bool=False):
             x="Date:T",y="價格:Q",text=alt.Text("比例:N")
         )
         layers.extend([rules,labels])
-    price_chart=alt.layer(*layers).properties(height=330,title="價格與均線")
+    price_chart=(alt.layer(*layers) if show_fibonacci else lines).properties(height=330,title="價格與均線")
     display["漲跌方向"]=np.where(display["Close"]>=display["Open"],"上漲","下跌")
     volume_chart=alt.Chart(display).mark_bar(opacity=.75).encode(
         x=alt.X("Date:T",title=None),y=alt.Y("Volume:Q",title="成交量"),
