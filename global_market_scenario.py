@@ -277,16 +277,24 @@ def stockq_data() -> tuple[pd.DataFrame, str]:
 def macromicro_export_data() -> tuple[pd.DataFrame, str]:
     """Latest public MacroMicro export YoY observations verified from its cross-country table."""
     # The public page currently rejects non-browser requests (HTTP 403). These values are the
-    # latest visible observations verified on 2026-08-25; IMF remains the automatic fallback.
+    # latest visible observations verified on 2026-09-01; IMF remains the automatic fallback.
     observations={
         "台灣":(32.9,"2026-07"),
         "日本":(23.2,"2026-07"),
         "韓國":(63.0,"2026-07"),
         "中國":(23.9,"2026-07"),
         "香港":(23.9,"2026-07"),
+        "美國":(12.0,"2026-07"),
+        "英國":(6.1,"2026-07"),
+        "法國":(6.8,"2026-07"),
+        "德國":(6.6,"2026-07"),
+        "印度":(18.7,"2026-07"),
+        "印尼":(8.8,"2026-07"),
+        "澳洲":(6.6,"2026-07"),
+        "巴西":(6.2,"2026-07"),
     }
     rows=[{"市場":market,"指標":"出口值年增率%","數值":value,"年度":period,"資料來源":"財經M平方（中國出口代理）" if market=="香港" else "財經M平方（公開頁面）","來源代碼":"exports-yoy-cn-proxy" if market=="香港" else "exports-yoy"} for market,(value,period) in observations.items()]
-    return pd.DataFrame(rows),"香港依使用者指定，採中國出口值年增率作為代理"
+    return pd.DataFrame(rows),"公開頁面驗證日：2026-09-01；香港依指定採中國出口值年增率作為代理"
 
 
 def combine_macro_sources(imf: pd.DataFrame, stockq: pd.DataFrame, macromicro: pd.DataFrame | None=None) -> pd.DataFrame:
