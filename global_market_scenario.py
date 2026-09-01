@@ -572,11 +572,12 @@ def line_chart(df, show_fibonacci: bool=False):
             {"Date":window["Date"].max(),"比例":label,"價格":high-ratio*span,"控制":"費波那契"}
             for ratio,label in ((0.0,"0% 壓力"),(.382,"38.2%"),(.5,"50%"),(.618,"61.8%"),(1.0,"100% 支撐"))
         ])
+        fib["右側標籤"]=fib.apply(lambda row:f"{row['比例']}｜{row['價格']:,.2f}",axis=1)
         rules=alt.Chart(fib).mark_rule(color="#f59e0b",strokeDash=[6,4]).encode(
             y="價格:Q",opacity=alt.condition(fib_toggle,alt.value(.9),alt.value(0)),tooltip=["比例:N",alt.Tooltip("價格:Q",format=",.2f")]
         )
-        labels=alt.Chart(fib).mark_text(align="right",dx=-6,dy=-5,color="#f59e0b",fontSize=11).encode(
-            x="Date:T",y="價格:Q",text=alt.Text("比例:N"),opacity=alt.condition(fib_toggle,alt.value(1),alt.value(0))
+        labels=alt.Chart(fib).mark_text(align="right",dx=-6,dy=-5,color="#f59e0b",fontSize=11,fontWeight="bold").encode(
+            x="Date:T",y="價格:Q",text=alt.Text("右側標籤:N"),opacity=alt.condition(fib_toggle,alt.value(1),alt.value(0))
         )
         control=alt.Chart(pd.DataFrame({"控制":["費波那契"]})).mark_text(
             align="left",baseline="top",fontSize=14,fontWeight="bold",cursor="pointer"
