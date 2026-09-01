@@ -14,17 +14,18 @@ from urllib.request import Request, urlopen
 # 設定頁面配置 (寬螢幕模式)
 st.set_page_config(page_title="專業金融技術與即時診斷儀表板", layout="wide")
 
-# 同一個部署入口提供兩套研究頁面。亞洲市場頁的分析邏輯拆在同資料夾的
+# 同一個部署入口提供三套研究頁面。情境頁的分析邏輯拆在同資料夾的
 # market_scenario_template.py，避免破壞既有個股儀表板的計算與版面。
 with st.sidebar:
     app_page = st.radio(
         "功能頁面",
-        ["個股技術與法人分析", "全球市場情境評估"],
+        ["個股技術與法人分析", "全球市場情境評估", "黃金／石油情境評估"],
         index=1,
         horizontal=False,
     )
 
-if app_page == "全球市場情境評估":
+if app_page in {"全球市場情境評估", "黃金／石油情境評估"}:
+    scenario_view = "commodities" if app_page == "黃金／石油情境評估" else "markets"
     scenario_file = Path(__file__).with_name("market_scenario_template.py")
     # 本機開發時可共用 stock_app 中的最新版模組；正式部署仍建議把模組
     # 與 app.py 一起放在 future 資料夾／Git 專案內。

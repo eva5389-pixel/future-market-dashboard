@@ -19,6 +19,7 @@ import streamlit as st
 import yfinance as yf
 
 st.set_page_config(page_title="全球市場情境評估", page_icon="🌏", layout="wide")
+SCENARIO_VIEW = globals().get("scenario_view", "markets")
 
 MARKETS = {
     "台灣": {"index": "^TWII", "etf": "EWT", "imf": "TWN", "sectors": {"大型權值": "0050.TW", "科技／半導體": "0052.TW", "金融": "0055.TW"}},
@@ -490,8 +491,58 @@ def render_metric_grid(items):
     <div class="metric-grid">"""+"".join(cards)+"</div>",unsafe_allow_html=True)
 
 
-st.title("🌏 全球主要市場｜情境模擬與市場進場評估")
-st.caption("台、美、日、韓、中、港、英、法、德、印度、印尼、澳洲、巴西｜價量技術 × ETF資金流代理 × IMF總經。")
+def commodity_scenario_score(name: str, technical: float, rate_bps: float, stock_pct: float, bond_pct: float) -> tuple[float, str]:
+    """Combine technical strength with transparent macro-scenario sensitivities."""
+    if name == "黃金期貨指數": adjustment=-rate_bps*.035-stock_pct*.35+bond_pct*.25
+    elif name in {"費城金銀指數","彭博世界礦業指數"}: adjustment=-rate_bps*.025+stock_pct*.20+bond_pct*.12
+    elif name == "DAXglobal 農業企業指數": adjustment=-rate_bps*.012+stock_pct*.35-bond_pct*.08
+    elif name == "西德州原油期貨": adjustment=-rate_bps*.012+stock_pct*.80-bond_pct*.10
+    else: adjustment=-rate_bps*.010+stock_pct*.65-bond_pct*.08
+    score=float(np.clip(technical*.70+15+adjustment,0,100))
+    explanation=f"技術分×70%＋中性基準15分＋情境調整{adjustment:+.1f}分"
+    return score,explanation
+
+
+def render_commodity_section(commodity_data: dict, scenario_name: str, rate: int, stock: int, bond: int) -> None:
+    st.subheader(f"情境：{scenario_name}｜利率 {rate:+d}bps｜股票 {stock:+d}%｜債券 {bond:+d}%")
+    st.caption("情境分會隨左側情境與自訂衝擊即時重算；原指數無穩定免費歷史行情時，以ETF代理並清楚標示。")
+    commodity_rows=[]
+    for name,cfg in COMMODITY_ASSETS.items():
+        s=commodity_data[name]
+        row={"分類":cfg["group"],"指標":name,"代碼":cfg["symbol"],"資料屬性":cfg["type"],"資料來源":cfg["source"]}
+        if "error" in s:
+            row.update({"日期":None,"目前值":np.nan,"日漲跌%":np.nan,"1M%":np.nan,"3M%":np.nan,"技術分":np.nan,"情境分":np.nan,"結論":"暫無行情","情境計算":""})
+        else:
+            scenario_score,scenario_note=commodity_scenario_score(name,s["technical"],rate,stock,bond)
+            row.update({"日期":s["date"],"目前值":s["close"],"日漲跌%":s["day"],"1M%":s["m1"],"3M%":s["m3"],"技術分":s["technical"],"情境分":scenario_score,"結論":verdict(scenario_score),"情境計算":scenario_note})
+        commodity_rows.append(row)
+    commodity_frame=pd.DataFrame(commodity_rows).sort_values("情境分",ascending=False,na_position="last")
+    available=commodity_frame.dropna(subset=["情境分"])
+    if not available.empty: st.metric("目前相對優先商品",available.iloc[0]["指標"],available.iloc[0]["結論"])
+    st.dataframe(commodity_frame,hide_index=True,width="stretch")
+    selected_asset=st.selectbox("選擇指標查看技術線",list(COMMODITY_ASSETS),key=f"commodity_asset_{SCENARIO_VIEW}")
+    selected_data=commodity_data[selected_asset]
+    if "error" in selected_data:
+        st.warning(f"{selected_asset}目前無法取得行情；請稍後清除快取重試。")
+        return
+    cfg=COMMODITY_ASSETS[selected_asset]
+    scenario_score,scenario_note=commodity_scenario_score(selected_asset,selected_data["technical"],rate,stock,bond)
+    st.markdown(f"### {selected_asset}｜{cfg['symbol']}｜資料日 {selected_data['date']}")
+    render_metric_grid([
+        ("目前值",f"{selected_data['close']:,.2f}",f"{selected_data['day']:+.2f}%"),
+        ("1個月",f"{selected_data['m1']:+.2f}%",None),("3個月",f"{selected_data['m3']:+.2f}%",None),
+        ("情境分",f"{scenario_score:.1f}",verdict(scenario_score)),("技術階段",selected_data["階段判讀"],None),
+    ])
+    st.altair_chart(line_chart(selected_data["df"]),width="stretch")
+    st.caption(f"{scenario_note}。資料屬性：{cfg['type']}。DAX『農金』依 DAXglobal Agribusiness（農業企業）解讀。")
+
+
+if SCENARIO_VIEW == "commodities":
+    st.title("🪙 黃金／石油｜情境模擬與進場評估")
+    st.caption("黃金、礦業、農業企業與石油｜價量技術 × 利率 × 全球股債情境。")
+else:
+    st.title("🌏 全球主要市場｜情境模擬與市場進場評估")
+    st.caption("台、美、日、韓、中、港、英、法、德、印度、印尼、澳洲、巴西｜價量技術 × ETF資金流代理 × IMF總經。")
 with st.sidebar:
     scenario_name=st.selectbox("總體情境",list(SCENARIOS)); preset=SCENARIOS[scenario_name]; custom=st.checkbox("自行調整衝擊假設")
     rate=st.slider("政策利率變動（bps）",-300,300,preset["rate"],25,disabled=not custom); stock=st.slider("全球股票衝擊（%）",-40,30,preset["stock"],1,disabled=not custom); bond=st.slider("全球債券衝擊（%）",-25,25,preset["bond"],1,disabled=not custom)
@@ -500,6 +551,13 @@ with st.sidebar:
         factor_weights={name:st.slider(f"{name}權重",0.0,2.0,.4 if name=="VIX恐慌指數" else 1.0,.1,key=f"weight_{cfg['symbol']}") for name,cfg in GLOBAL_FACTORS.items()}
         export_weight=st.slider("出口成長權重",0.0,2.0,1.0,.1)
     if st.button("🔄 清除快取並更新",width="stretch"): st.cache_data.clear(); st.rerun()
+
+if SCENARIO_VIEW == "commodities":
+    with st.spinner("同步黃金與石油行情……"):
+        commodity_data={name:analyze(cfg["symbol"]) for name,cfg in COMMODITY_ASSETS.items()}
+    render_commodity_section(commodity_data,scenario_name,rate,stock,bond)
+    st.caption(f"產生時間：{datetime.now():%Y-%m-%d %H:%M:%S}｜行情快取30分鐘。本頁僅供研究，不構成投資建議。")
+    st.stop()
 
 with st.spinner("同步行情與總經資料……"):
     imf_macro,macro_error=imf_data(); stockq_macro,stockq_error=stockq_data(); mm_export,mm_export_note=macromicro_export_data(); macro=combine_macro_sources(imf_macro,stockq_macro,mm_export); index_data={m:analyze(c["index"]) for m,c in MARKETS.items()}; etf_data={m:analyze(c["etf"]) for m,c in MARKETS.items()}; factor_data={name:analyze(cfg["symbol"]) for name,cfg in GLOBAL_FACTORS.items()}; commodity_data={name:analyze(cfg["symbol"]) for name,cfg in COMMODITY_ASSETS.items()}
@@ -658,31 +716,7 @@ with tabs[5]:
 
 with tabs[6]:
     st.subheader("黃金、礦業、農業與石油市場")
-    st.caption("原指數可由免費行情源取得時直接顯示；授權指數無穩定免費歷史行情時，使用流動性較佳的ETF代理並清楚標示。")
-    commodity_rows=[]
-    for name,cfg in COMMODITY_ASSETS.items():
-        s=commodity_data[name]
-        row={"分類":cfg["group"],"指標":name,"代碼":cfg["symbol"],"資料屬性":cfg["type"],"資料來源":cfg["source"]}
-        if "error" in s: row.update({"日期":None,"目前值":np.nan,"日漲跌%":np.nan,"1M%":np.nan,"3M%":np.nan,"技術階段":"暫無行情"})
-        else: row.update({"日期":s["date"],"目前值":s["close"],"日漲跌%":s["day"],"1M%":s["m1"],"3M%":s["m3"],"技術階段":s["階段判讀"]})
-        commodity_rows.append(row)
-    st.dataframe(pd.DataFrame(commodity_rows),hide_index=True,width="stretch")
-    selected_asset=st.selectbox("選擇指標查看技術線",list(COMMODITY_ASSETS),key="commodity_asset")
-    selected_data=commodity_data[selected_asset]
-    if "error" in selected_data:
-        st.warning(f"{selected_asset}目前無法取得行情；請稍後清除快取重試。")
-    else:
-        cfg=COMMODITY_ASSETS[selected_asset]
-        st.markdown(f"### {selected_asset}｜{cfg['symbol']}｜資料日 {selected_data['date']}")
-        render_metric_grid([
-            ("目前值",f"{selected_data['close']:,.2f}",f"{selected_data['day']:+.2f}%"),
-            ("1個月",f"{selected_data['m1']:+.2f}%",None),
-            ("3個月",f"{selected_data['m3']:+.2f}%",None),
-            ("RSI14",f"{selected_data['rsi']:.1f}",None),
-            ("技術階段",selected_data["階段判讀"],None),
-        ])
-        st.altair_chart(line_chart(selected_data["df"]),width="stretch")
-        st.caption(f"資料屬性：{cfg['type']}。DAX『農金』依 DAXglobal Agribusiness（農業企業）解讀；若原意是 DAXglobal Gold Miners，請改用金礦指數授權行情。")
+    render_commodity_section(commodity_data,scenario_name,rate,stock,bond)
 
 with tabs[7]:
     st.markdown("""### 評分框架
