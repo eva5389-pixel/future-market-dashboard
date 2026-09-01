@@ -452,12 +452,26 @@ def flow_table(etf_data: dict) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def line_chart(df):
+def line_chart(df, show_fibonacci: bool=False):
     long=df.tail(260).melt(id_vars="Date",value_vars=["Close","MA20","MA60","MA200"],var_name="線型",value_name="價格")
     lines=alt.Chart(long).mark_line().encode(x="Date:T",y=alt.Y("價格:Q",scale=alt.Scale(zero=False)),color="線型:N",tooltip=["Date:T","線型:N",alt.Tooltip("價格:Q",format=",.2f")])
     latest=df.tail(1).assign(線型="最新日線",價格=lambda x:x["Close"])
     point=alt.Chart(latest).mark_point(size=115,filled=True,color="#ff4b4b").encode(x="Date:T",y="價格:Q",tooltip=[alt.Tooltip("Date:T",title="資料日期"),alt.Tooltip("價格:Q",title="最新日線價",format=",.2f")])
-    return alt.layer(lines,point).properties(height=380).interactive()
+    layers=[lines,point]
+    if show_fibonacci:
+        window=df.tail(260); high=float(window["High"].max()); low=float(window["Low"].min()); span=high-low
+        fib=pd.DataFrame([
+            {"Date":window["Date"].max(),"比例":label,"價格":high-ratio*span}
+            for ratio,label in ((0.0,"0% 壓力"),(.382,"38.2%"),(.5,"50%"),(.618,"61.8%"),(1.0,"100% 支撐"))
+        ])
+        rules=alt.Chart(fib).mark_rule(color="#f59e0b",strokeDash=[6,4],opacity=.85).encode(
+            y="價格:Q",tooltip=["比例:N",alt.Tooltip("價格:Q",format=",.2f")]
+        )
+        labels=alt.Chart(fib).mark_text(align="right",dx=-6,dy=-5,color="#f59e0b",fontSize=11).encode(
+            x="Date:T",y="價格:Q",text=alt.Text("比例:N")
+        )
+        layers.extend([rules,labels])
+    return alt.layer(*layers).properties(height=380).interactive()
 
 
 def oscillator_charts(df):
@@ -528,7 +542,11 @@ def render_commodity_section(commodity_data: dict, scenario_name: str, rate: int
     available=commodity_frame.dropna(subset=["情境分"])
     if not available.empty: st.metric("目前相對優先商品",available.iloc[0]["指標"],available.iloc[0]["結論"])
     st.dataframe(commodity_frame,hide_index=True,width="stretch")
-    selected_asset=st.selectbox("選擇指標查看技術線",list(COMMODITY_ASSETS),key=f"commodity_asset_{SCENARIO_VIEW}")
+    selector_col,fib_col=st.columns([2,1],vertical_alignment="bottom")
+    with selector_col:
+        selected_asset=st.selectbox("選擇指標查看技術線",list(COMMODITY_ASSETS),key=f"commodity_asset_{SCENARIO_VIEW}")
+    with fib_col:
+        show_fibonacci=st.checkbox("顯示費波那契支撐壓力",key=f"commodity_fibonacci_{SCENARIO_VIEW}")
     selected_data=commodity_data[selected_asset]
     if "error" in selected_data:
         st.warning(f"{selected_asset}目前無法取得行情；請稍後清除快取重試。")
@@ -541,7 +559,7 @@ def render_commodity_section(commodity_data: dict, scenario_name: str, rate: int
         ("1個月",f"{selected_data['m1']:+.2f}%",None),("3個月",f"{selected_data['m3']:+.2f}%",None),
         ("情境分",f"{scenario_score:.1f}",verdict(scenario_score)),("技術階段",selected_data["階段判讀"],None),
     ])
-    st.altair_chart(line_chart(selected_data["df"]),width="stretch")
+    st.altair_chart(line_chart(selected_data["df"],show_fibonacci=show_fibonacci),width="stretch")
     st.caption(f"{scenario_note}。資料屬性：{cfg['type']}。DAX『農金』依 DAXglobal Agribusiness（農業企業）解讀。")
 
 
