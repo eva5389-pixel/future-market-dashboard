@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 import html
 from datetime import date, datetime, timedelta
-from io import StringIO
+from io import BytesIO, StringIO
 from urllib.parse import urlencode
 
 import altair as alt
@@ -107,6 +107,63 @@ def prices(symbol: str, period="2y") -> pd.DataFrame:
     df = df[cols].dropna(subset=["Close"]).copy()
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.tz_localize(None)
     return df.dropna(subset=["Date"]).sort_values("Date")
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def fred_series(series_id: str, value_name: str) -> pd.DataFrame:
+    """Read a public FRED CSV and normalize it to Date/value columns."""
+    url=f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
+    response=requests.get(url,timeout=30,headers={"User-Agent":"market-research-dashboard/1.0"})
+    response.raise_for_status()
+    frame=pd.read_csv(StringIO(response.text))
+    if len(frame.columns)<2: return pd.DataFrame()
+    frame=frame.rename(columns={frame.columns[0]:"Date",frame.columns[1]:value_name})
+    frame["Date"]=pd.to_datetime(frame["Date"],errors="coerce")
+    frame[value_name]=pd.to_numeric(frame[value_name],errors="coerce")
+    return frame.dropna().sort_values("Date")
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def oil_inventory() -> pd.DataFrame:
+    """EIA weekly U.S. commercial crude stocks excluding the SPR."""
+    url="https://www.eia.gov/dnav/pet/hist_xls/WCESTUS1w.xls"
+    response=requests.get(url,timeout=35,headers={"User-Agent":"Mozilla/5.0"})
+    response.raise_for_status()
+    raw=pd.read_excel(BytesIO(response.content),sheet_name="Data 1",skiprows=2)
+    raw=raw.iloc[:,:2].copy(); raw.columns=["Date","庫存量"]
+    raw["Date"]=pd.to_datetime(raw["Date"],errors="coerce")
+    raw["庫存量"]=pd.to_numeric(raw["庫存量"],errors="coerce")/1000
+    return raw.dropna().sort_values("Date")
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def gold_inventory_snapshot() -> tuple[pd.DataFrame, str]:
+    """Fetch CME's current COMEX depository report; never substitute ETF holdings."""
+    url="https://www.cmegroup.com/delivery_reports/Gold_Stocks.xls"
+    try:
+        response=requests.get(url,timeout=30,headers={"User-Agent":"Mozilla/5.0","Referer":"https://www.cmegroup.com/"})
+        response.raise_for_status()
+        raw=pd.read_excel(BytesIO(response.content),header=None)
+        text=raw.fillna("").astype(str)
+        result=[]
+        for category in ("REGISTERED","ELIGIBLE","PLEDGED"):
+            hits=np.where(text.apply(lambda col: col.str.upper().eq(category)).to_numpy())
+            if len(hits[0]):
+                row=int(hits[0][0]); values=pd.to_numeric(raw.iloc[row],errors="coerce").dropna()
+                if not values.empty: result.append({"分類":category.title(),"庫存量":float(values.iloc[-1])})
+        if result: return pd.DataFrame(result),"CME COMEX Gold Stocks（當日快照，金衡盎司）"
+        return pd.DataFrame(),"CME 檔案格式暫時無法辨識"
+    except Exception as exc:
+        return pd.DataFrame(),f"CME 官方檔目前拒絕或無法讀取（{type(exc).__name__}）"
+
+
+def futures_spot_spread(futures: pd.DataFrame, spot: pd.DataFrame, spot_col: str) -> pd.DataFrame:
+    left=futures[["Date","Close"]].rename(columns={"Close":"期貨價"}).sort_values("Date")
+    right=spot[["Date",spot_col]].rename(columns={spot_col:"現貨價"}).sort_values("Date")
+    merged=pd.merge_asof(left,right,on="Date",direction="backward",tolerance=pd.Timedelta(days=4)).dropna()
+    merged["價差"]=merged["期貨價"]-merged["現貨價"]
+    merged["價差率%"]=merged["價差"]/merged["現貨價"]*100
+    return merged
 
 
 def indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -453,7 +510,8 @@ def flow_table(etf_data: dict) -> pd.DataFrame:
 
 
 def line_chart(df, show_fibonacci: bool=False):
-    long=df.tail(260).melt(id_vars="Date",value_vars=["Close","MA20","MA60","MA200"],var_name="線型",value_name="價格")
+    display=df.tail(260).copy()
+    long=display.melt(id_vars="Date",value_vars=["Close","MA20","MA60","MA200"],var_name="線型",value_name="價格")
     lines=alt.Chart(long).mark_line().encode(x="Date:T",y=alt.Y("價格:Q",scale=alt.Scale(zero=False)),color="線型:N",tooltip=["Date:T","線型:N",alt.Tooltip("價格:Q",format=",.2f")])
     latest=df.tail(1).assign(線型="最新日線",價格=lambda x:x["Close"])
     point=alt.Chart(latest).mark_point(size=115,filled=True,color="#ff4b4b").encode(x="Date:T",y="價格:Q",tooltip=[alt.Tooltip("Date:T",title="資料日期"),alt.Tooltip("價格:Q",title="最新日線價",format=",.2f")])
@@ -471,7 +529,37 @@ def line_chart(df, show_fibonacci: bool=False):
             x="Date:T",y="價格:Q",text=alt.Text("比例:N")
         )
         layers.extend([rules,labels])
-    return alt.layer(*layers).properties(height=380).interactive()
+    price_chart=alt.layer(*layers).properties(height=330,title="價格與均線")
+    display["漲跌方向"]=np.where(display["Close"]>=display["Open"],"上漲","下跌")
+    volume_chart=alt.Chart(display).mark_bar(opacity=.75).encode(
+        x=alt.X("Date:T",title=None),y=alt.Y("Volume:Q",title="成交量"),
+        color=alt.Color("漲跌方向:N",scale=alt.Scale(domain=["上漲","下跌"],range=["#ef5350","#26a69a"]),legend=None),
+        tooltip=[alt.Tooltip("Date:T",title="日期"),alt.Tooltip("Volume:Q",title="成交量",format=",")]
+    ).properties(height=105,title="成交量")
+    return alt.vconcat(price_chart,volume_chart,spacing=8).resolve_scale(x="shared").interactive()
+
+
+def spread_chart(frame: pd.DataFrame, title: str):
+    base=alt.Chart(frame.tail(520)).encode(x=alt.X("Date:T",title="日期"))
+    area=base.mark_area(opacity=.28).encode(
+        y=alt.Y("價差:Q",title="期貨－現貨"),
+        color=alt.condition(alt.datum["價差"]>=0,alt.value("#ef5350"),alt.value("#26a69a")),
+        tooltip=[alt.Tooltip("Date:T",title="日期"),alt.Tooltip("期貨價:Q",format=",.2f"),alt.Tooltip("現貨價:Q",format=",.2f"),alt.Tooltip("價差:Q",format="+.2f"),alt.Tooltip("價差率%:Q",format="+.2f")]
+    )
+    zero=alt.Chart(pd.DataFrame({"y":[0]})).mark_rule(color="#888",strokeDash=[4,4]).encode(y="y:Q")
+    return alt.layer(area,zero).properties(height=280,title=title).interactive()
+
+
+def inventory_chart(frame: pd.DataFrame, title: str, categorical: bool=False):
+    if categorical:
+        return alt.Chart(frame).mark_bar().encode(
+            x=alt.X("分類:N",title=None),y=alt.Y("庫存量:Q",title="金衡盎司"),
+            color=alt.Color("分類:N",legend=None),tooltip=["分類:N",alt.Tooltip("庫存量:Q",format=",")]
+        ).properties(height=280,title=title)
+    return alt.Chart(frame.tail(260)).mark_line(color="#ff9f1c",strokeWidth=2).encode(
+        x=alt.X("Date:T",title="日期"),y=alt.Y("庫存量:Q",title="百萬桶",scale=alt.Scale(zero=False)),
+        tooltip=[alt.Tooltip("Date:T",title="週別"),alt.Tooltip("庫存量:Q",title="百萬桶",format=",.1f")]
+    ).properties(height=280,title=title).interactive()
 
 
 def oscillator_charts(df):
@@ -560,7 +648,41 @@ def render_commodity_section(commodity_data: dict, scenario_name: str, rate: int
         ("情境分",f"{scenario_score:.1f}",verdict(scenario_score)),("技術階段",selected_data["階段判讀"],None),
     ])
     st.altair_chart(line_chart(selected_data["df"],show_fibonacci=show_fibonacci),width="stretch")
-    st.caption(f"{scenario_note}。資料屬性：{cfg['type']}。DAX『農金』依 DAXglobal Agribusiness（農業企業）解讀。")
+    st.caption(f"{scenario_note}。資料屬性：{cfg['type']}。紅柱為收高、綠柱為收低；指數若未提供成交量會顯示空值。DAX『農金』依 DAXglobal Agribusiness（農業企業）解讀。")
+
+    st.markdown("### 期現貨價差")
+    spread_choice=st.radio("商品",["WTI 原油","黃金"],horizontal=True,key=f"spread_choice_{SCENARIO_VIEW}")
+    if spread_choice=="WTI 原油":
+        try:
+            spot=fred_series("DCOILWTICO","現貨")
+            spread=futures_spot_spread(commodity_data["西德州原油期貨"]["df"],spot,"現貨")
+            if spread.empty: st.info("WTI 期貨與現貨日期目前無法對齊。")
+            else:
+                st.altair_chart(spread_chart(spread,"WTI 近月期貨－Cushing 現貨價差（美元／桶）"),width="stretch")
+                latest=spread.iloc[-1]; st.caption(f"最新價差 {latest['價差']:+.2f} 美元／桶（{latest['價差率%']:+.2f}%）。正值通常為期貨溢價，負值通常為現貨溢價；近月連續合約換月時可能出現跳動。資料：Yahoo Finance、EIA／FRED。")
+        except Exception as exc: st.info(f"WTI 期現貨價差暫時無法更新（{type(exc).__name__}）。")
+    else:
+        st.info("黃金現貨的免費歷史授權來源目前無法穩定讀取，因此暫不以 GLD、金礦股或其他不同單位代理現貨，避免產生錯誤價差。黃金期貨技術線與成交量仍正常顯示。")
+        st.link_button("查看 CME 黃金期貨與交割資料","https://www.cmegroup.com/markets/metals/precious/gold.html")
+
+    st.markdown("### 庫存量")
+    inv_gold,inv_note=gold_inventory_snapshot()
+    inv_col1,inv_col2=st.columns(2)
+    with inv_col1:
+        try:
+            oil_inv=oil_inventory()
+            st.altair_chart(inventory_chart(oil_inv,"美國商業原油庫存（不含 SPR）"),width="stretch")
+            if not oil_inv.empty:
+                last=oil_inv.iloc[-1]; change=last["庫存量"]-oil_inv.iloc[-2]["庫存量"] if len(oil_inv)>1 else np.nan
+                st.caption(f"{last['Date']:%Y-%m-%d}：{last['庫存量']:,.1f} 百萬桶，週變動 {change:+,.1f} 百萬桶。資料：EIA。")
+        except Exception as exc: st.info(f"EIA 原油庫存暫時無法更新（{type(exc).__name__}）。")
+    with inv_col2:
+        if inv_gold.empty:
+            st.info(inv_note)
+            st.link_button("查看 CME 金屬庫存官方報告","https://www.cmegroup.com/solutions/clearing/operations-and-deliveries/nymex-delivery-notices.html")
+        else:
+            st.altair_chart(inventory_chart(inv_gold,"COMEX 黃金庫存結構（最新快照）",categorical=True),width="stretch")
+            st.caption(inv_note)
 
 
 if SCENARIO_VIEW == "commodities":
