@@ -548,7 +548,7 @@ def line_chart(df, show_fibonacci: bool=False):
     layers=[lines,point]
     fib_toggle=None
     if show_fibonacci:
-        fib_toggle=alt.param(value=False,bind=alt.binding_checkbox(name="顯示費波那契支撐壓力 "))
+        fib_toggle=alt.selection_point(name="fib_toggle",fields=["控制"],on="click",toggle=True,empty=False)
         window=df.tail(260); high=float(window["High"].max()); low=float(window["Low"].min()); span=high-low
         fib=pd.DataFrame([
             {"Date":window["Date"].max(),"比例":label,"價格":high-ratio*span}
@@ -560,9 +560,17 @@ def line_chart(df, show_fibonacci: bool=False):
         labels=alt.Chart(fib).mark_text(align="right",dx=-6,dy=-5,color="#f59e0b",fontSize=11).encode(
             x="Date:T",y="價格:Q",text=alt.Text("比例:N"),opacity=alt.condition(fib_toggle,alt.value(1),alt.value(0))
         )
-        layers.extend([rules,labels])
+        control=alt.Chart(pd.DataFrame({"控制":["費波那契"]})).mark_text(
+            align="left",baseline="top",fontSize=14,fontWeight="bold",cursor="pointer"
+        ).encode(
+            x=alt.value(8),y=alt.value(8),
+            text=alt.condition(fib_toggle,alt.value("☑ 顯示費波那契支撐壓力"),alt.value("☐ 顯示費波那契支撐壓力")),
+            color=alt.condition(fib_toggle,alt.value("#f59e0b"),alt.value("#9ca3af")),
+            tooltip=alt.value("點一下顯示或隱藏費波那契線")
+        ).add_params(fib_toggle)
+        layers.extend([rules,labels,control])
     chart=alt.layer(*layers).properties(height=380,title="價格與均線").interactive()
-    return chart.add_params(fib_toggle) if fib_toggle is not None else chart
+    return chart
 
 
 def price_volume_chart(df):
