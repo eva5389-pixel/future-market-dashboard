@@ -182,8 +182,26 @@ def gold_inventory_snapshot() -> tuple[pd.DataFrame, str]:
                 if not values.empty: result.append({"分類":category.title(),"庫存量":float(values.iloc[-1])})
         if result: return pd.DataFrame(result),"CME COMEX Gold Stocks（當日快照，金衡盎司）"
         return pd.DataFrame(),"CME 檔案格式暫時無法辨識"
-    except Exception as exc:
-        return pd.DataFrame(),f"CME 官方檔目前拒絕或無法讀取（{type(exc).__name__}）"
+    except Exception as cme_exc:
+        try:
+            headers={"User-Agent":"Mozilla/5.0","X-Requested-With":"XMLHttpRequest"}
+            token_response=requests.get("https://metalcharts.org/api/security/token",headers=headers,timeout=20)
+            token_response.raise_for_status(); token=token_response.json()["token"]
+            response=requests.get(
+                "https://metalcharts.org/api/comex/inventory?symbol=XAU&range=1Y",
+                headers={**headers,"X-MC-Token":token},timeout=25
+            )
+            response.raise_for_status(); payload=response.json()
+            raw=pd.DataFrame(payload.get("data",[]))
+            if raw.empty: raise ValueError("empty inventory mirror")
+            raw=raw.rename(columns={"date":"Date","registered":"Registered","eligible":"Eligible","total":"Total"})
+            raw["Date"]=pd.to_datetime(raw["Date"],errors="coerce")
+            for column in ("Registered","Eligible","Total"): raw[column]=pd.to_numeric(raw[column],errors="coerce")/1_000_000
+            raw=raw.dropna(subset=["Date","Total"]).sort_values("Date")
+            note=f"CME 原始檔遭雲端 IP 阻擋（{type(cme_exc).__name__}）；改用 MetalCharts 每日同步 CME 報告的備援資料（百萬金衡盎司）"
+            return raw,note
+        except Exception as mirror_exc:
+            return pd.DataFrame(),f"CME 官方檔與備援資料目前皆無法讀取（{type(cme_exc).__name__}／{type(mirror_exc).__name__}）"
 
 
 def futures_spot_spread(futures: pd.DataFrame, spot: pd.DataFrame, spot_col: str) -> pd.DataFrame:
@@ -606,6 +624,15 @@ def inventory_chart(frame: pd.DataFrame, title: str, categorical: bool=False):
     ).properties(height=280,title=title).interactive()
 
 
+def gold_inventory_history_chart(frame: pd.DataFrame):
+    long=frame.tail(260).melt(id_vars="Date",value_vars=["Registered","Eligible","Total"],var_name="庫存分類",value_name="百萬盎司")
+    return alt.Chart(long).mark_line(strokeWidth=2).encode(
+        x=alt.X("Date:T",title="日期"),y=alt.Y("百萬盎司:Q",title="百萬金衡盎司",scale=alt.Scale(zero=False)),
+        color=alt.Color("庫存分類:N",scale=alt.Scale(domain=["Registered","Eligible","Total"],range=["#f59e0b","#60a5fa","#ef4444"])),
+        tooltip=[alt.Tooltip("Date:T",title="日期"),"庫存分類:N",alt.Tooltip("百萬盎司:Q",format=",.2f")]
+    ).properties(height=280,title="COMEX 黃金庫存（Registered／Eligible／Total）").interactive()
+
+
 def oscillator_charts(df):
     kd=df.tail(180).melt(id_vars="Date",value_vars=["K","D"],var_name="指標",value_name="數值")
     kd_chart=alt.Chart(kd).mark_line().encode(x="Date:T",y=alt.Y("數值:Q",scale=alt.Scale(domain=[0,100])),color="指標:N",tooltip=["Date:T","指標:N",alt.Tooltip("數值:Q",format=".1f")]).properties(height=190,title="KD（80以上偏熱、20以下偏冷）").interactive()
@@ -728,6 +755,11 @@ def render_commodity_section(commodity_data: dict, scenario_name: str, rate: int
         if inv_gold.empty:
             st.info(inv_note)
             st.link_button("查看 CME 金屬庫存官方報告","https://www.cmegroup.com/solutions/clearing/operations-and-deliveries/nymex-delivery-notices.html")
+        elif "Date" in inv_gold.columns:
+            st.altair_chart(gold_inventory_history_chart(inv_gold),width="stretch")
+            latest=inv_gold.iloc[-1]
+            st.caption(f"{latest['Date']:%Y-%m-%d}：Registered {latest['Registered']:,.2f}、Eligible {latest['Eligible']:,.2f}、Total {latest['Total']:,.2f} 百萬盎司。{inv_note}。")
+            st.link_button("下載 CME Gold Stocks 官方檔","https://www.cmegroup.com/delivery_reports/Gold_Stocks.xls")
         else:
             st.altair_chart(inventory_chart(inv_gold,"COMEX 黃金庫存結構（最新快照）",categorical=True),width="stretch")
             st.caption(inv_note)
